@@ -45,8 +45,8 @@ objectIndexedTableMetatable.__len = function(t)
 end
 
 function iDIndexedTableFunctions:add(v)
-    Rhodium.internal.assert(v[self.key], "Object doesn't have an id")
-    Rhodium.internal.assert(not self.indexTable[v[self.key]], "Object with id " .. v[self.key] .. " already exists")
+    assert(v[self.key], "Object doesn't have an id")
+    assert(not self.indexTable[v[self.key]], "Object with id " .. v[self.key] .. " already exists")
     table.insert(self.items, v)
     self.indexTable[v[self.key]] = #self.items
 end

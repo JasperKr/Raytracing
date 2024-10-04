@@ -90,9 +90,13 @@ local bvhTreeMetatable = {}
 local bvhTreeFunctions = {}
 bvhTreeMetatable.__index = bvhTreeFunctions
 
+local maxDepthReached = 0
+
 --- Creates a new BVH tree
 ---@return table
 function newBvhTree(triangles)
+    maxDepthReached = 0
+
     local self = {
         triangles = triangles,
     }
@@ -116,6 +120,8 @@ function newBvhTree(triangles)
 
     splitTree(1, triangles, 1, #triangles, 0)
 
+    print("Max depth reached: ", maxDepthReached)
+
     setmetatable(self, bvhTreeMetatable)
 
     return self
@@ -130,15 +136,16 @@ local center = vec3(0, 0, 0)
 ---@param triNum number
 ---@param depth number
 function splitTree(parentIndex, triangles, triGlobalStart, triNum, depth)
+    maxDepthReached = math.max(maxDepthReached, depth)
+
     local parent = nodes[parentIndex]
-    local maxDepth = 48
 
     local size = parent.bounds:getSize()
     local parentCost = nodeCost(size, triNum);
 
     local splitAxis, splitPos, cost = chooseSplit(triangles, parent, triGlobalStart, triNum);
 
-    if cost < parentCost and depth < maxDepth then
+    if cost < parentCost and depth < MAX_DEPTH then
         local boundsLeft = newBounds()
         local boundsRight = newBounds()
         local numOnLeft = 0;

@@ -1,11 +1,11 @@
 #pragma language glsl4
 
+layout (local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
 #define SKIP_VIEW_Z 1
 #define SKIP_GET_POSITION_DATA 1
 
 #include "functions.glsl"
-
-const int kernelSize = 5; // Adjust the size as needed
 
 #define PI 3.1415926535897932384626433832795
 #define saturate(x)        clamp(x, 0.0, 1.0)
@@ -15,22 +15,6 @@ const int kernelSize = 5; // Adjust the size as needed
 
 #define MEDIUMP_FLT_MAX    65504.0
 #define saturateMediump(x) min(x, MEDIUMP_FLT_MAX)
-
-varying vec2 VarVertexCoord;
-uniform bool FlipY;
-#ifdef VERTEX
-void vertexmain() {
-    VarVertexCoord = vec2((love_VertexID << 1) & 2, love_VertexID & 2);
-
-    vec4 VarScreenPosition = vec4(VarVertexCoord.xy * vec2(2.0, -2.0) + vec2(-1.0, 1.0), 0, 1);
-
-    // OpenGL Flip
-    if (!FlipY)
-        VarVertexCoord.y = 1.0 - VarVertexCoord.y;
-
-    gl_Position = VarScreenPosition;
-}
-#endif
 
 struct TextureInfo {
     vec2 scale;
@@ -71,7 +55,7 @@ readonly restrict buffer Materials {
     Material materials[];
 };
 
-readonly restrict buffer BVHNodes {
+layout(std430, binding = 0) readonly restrict buffer BVHNodes {
     BVHNode nodes[];
 };
 
@@ -81,19 +65,19 @@ uniform lowp sampler2DArray EmissiveTexture;
 uniform lowp sampler2DArray NormalTexture;
 uniform lowp sampler2DArray MetallicRoughnessTexture;
 
-readonly restrict buffer AlbedoBuffer {
+layout(std430, binding = 0) readonly restrict buffer AlbedoBuffer {
     TextureInfo albedoScales[];
 };
 
-readonly restrict buffer EmissiveBuffer {
+layout(std430, binding = 1) readonly restrict buffer EmissiveBuffer {
     TextureInfo emissiveScales[];
 };
 
-readonly restrict buffer NormalBuffer {
+layout(std430, binding = 2) readonly restrict buffer NormalBuffer {
     TextureInfo normalScales[];
 };
 
-readonly restrict buffer MetallicRoughnessBuffer {
+layout(std430, binding = 3) readonly restrict buffer MetallicRoughnessBuffer {
     TextureInfo metallicRoughnessScales[];
 };
 
@@ -206,11 +190,11 @@ vec3 rayTriangle(Ray ray, uint triIndex) {
     return vec3(-1.0);
 }
 
+#define MAX_DEPTH 23
+
 vec3 RayTriangleBVH(Ray ray, inout ivec2 amountChecked, out uint closestTriIndex)
 {
-    const int stackSize = 32;
-
-    uint stack[stackSize];
+    uint stack[MAX_DEPTH];
     int stackIndex = 0;
     stack[stackIndex++] = 0u;
     vec3 closestDistData = vec3(1E6);
@@ -220,7 +204,7 @@ vec3 RayTriangleBVH(Ray ray, inout ivec2 amountChecked, out uint closestTriIndex
 
     int max = 1000;
 
-    while (stackIndex > 0 && max--> 0 && stackIndex < stackSize)
+    while (stackIndex > 0 && max--> 0 && stackIndex < MAX_DEPTH)
     {
         BVHNode node = nodes[stack[--stackIndex]];
         bool isLeaf = node.TriangleCount > 0u;
@@ -284,9 +268,9 @@ vec3 sampleSkybox(Ray ray)
     return texture(Skybox, ray.direction).rgb * skyboxBrightness;
 }
 
-const int MaxBounces = 6;
-const float GlobalFogDensity = 0.2;
-const vec3 GlobalFogColor = vec3(0.8, 0.8, 0.8);
+const int MaxBounces = 4;
+const float GlobalFogDensity = 0.0;
+const vec3 GlobalFogColor = vec3(1.0, 1.0, 1.0);
 
 vec3 traceRay(Ray ray, inout uint state, inout ivec2 amountChecked, out float depth) {
     vec3 rayColor = vec3(1.0);
@@ -359,6 +343,9 @@ vec3 traceRay(Ray ray, inout uint state, inout ivec2 amountChecked, out float de
         // rayColor *= mix(vec3(1.0), albedo, isDiffuseHit);
         rayColor *= albedo;
         ray.invDirection = 1.0 / ray.direction;
+
+        if (max(max(rayColor.r, rayColor.g), rayColor.b) < 0.01)
+            break;
     }
 
     return rayIncomingLight;
@@ -383,18 +370,19 @@ vec3 reproject(vec3 position) {
     return clip.xyz * 0.5 + 0.5;
 }
 
-#ifdef PIXEL
+layout(rgba32f, binding = 0) uniform highp restrict image2D CurrentFrame;
 
-out vec4 FragColor;
+void computemain() {
+    vec2 screen_coords = vec2(gl_GlobalInvocationID.xy);
+    vec2 screen_size = imageSize(CurrentFrame);
 
-void pixelmain() {
+    vec2 VarVertexCoord = (screen_coords + vec2(0.5)) / screen_size;
+
     vec4 world = mulVec3Matrix4x4(InverseViewProjectionMatrix, vec3(VarVertexCoord * 2.0 - 1.0, 1.0));
 
     vec3 rayDirection = normalize(world.xyz / world.w - CameraPosition);
 
-    vec2 screen_coords = VarVertexCoord * love_ScreenSize.xy;
-
-    uint pixelIndex = uint(screen_coords.y * love_ScreenSize.x + screen_coords.x);
+    uint pixelIndex = uint(screen_coords.y * screen_size.x + screen_coords.x);
     uint rngState = pixelIndex + RandomIndex;
 
     vec3 randomDirection = RandomHemisphereDirection(rayDirection, rngState);
@@ -419,24 +407,22 @@ void pixelmain() {
     {   
         if (DebugViewMode == 0) // Bounding box tests
             if (amountChecked.x > 1000)
-                FragColor = vec4(1.0, 0.0, 0.0, 1.0);
+                imageStore(CurrentFrame, ivec2(screen_coords), vec4(1.0, 0.0, 0.0, 1.0));
             else
-                FragColor = vec4(vec3(float(amountChecked.x) / 1000.0), 1.0);
+                imageStore(CurrentFrame, ivec2(screen_coords), vec4(vec3(float(amountChecked.x) / 1000.0), 1.0));
         else if (DebugViewMode == 1) // Triangle tests
             if (amountChecked.y > 1000)
-                FragColor = vec4(1.0, 0.0, 0.0, 1.0);
+                imageStore(CurrentFrame, ivec2(screen_coords), vec4(1.0, 0.0, 0.0, 1.0));
             else
-                FragColor = vec4(vec3(float(amountChecked.y) / 1000.0), 1.0);
+                imageStore(CurrentFrame, ivec2(screen_coords), vec4(vec3(float(amountChecked.y) / 1000.0), 1.0));
         else
-            FragColor = vec4(color, 1.0);
+            imageStore(CurrentFrame, ivec2(screen_coords), vec4(color, 1.0));
         return;
     }
 
     highp float contribution = 1.0 / float(FrameIndex + 1u);
 
-    vec3 previousColor = texture(PreviousFrame, reprojected.xy).rgb;
+    vec3 previousColor = imageLoad(CurrentFrame, ivec2(screen_coords)).rgb;
 
-    FragColor = vec4(mix(previousColor, color, contribution), 1.0);
+    imageStore(CurrentFrame, ivec2(screen_coords), vec4(mix(previousColor, color, contribution), 1.0));
 }
-
-#endif

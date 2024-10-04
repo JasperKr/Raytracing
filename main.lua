@@ -5,6 +5,10 @@ function love.load()
         graphics = {},
         internal = {},
     }
+
+    table.new = require("table.new")
+    table.clear = require("table.clear")
+
     require("matrices")
     require("vec")
     require("Rmath")
@@ -15,6 +19,8 @@ function love.load()
     require("models")
     require("bvh")
     require("texturehandler")
+    require("tables")
+    require("shaders")
     Camera = {
         position = vec3(0, 0, 0),
         rotationMatrix = mat4(),
@@ -41,8 +47,10 @@ function love.load()
     Camera.previousInverseViewProjectionMatrix = Camera.inverseViewProjectionMatrix
     Camera.previousInverseViewMatrix = Camera.inverseViewMatrix
 
+    MAX_DEPTH = 22
+
     Shaders = {
-        main = Rhodium.graphics.newShader("main.glsl"),
+        main = Rhodium.graphics.newComputeShader("main.glsl"),
     }
 
     Skybox = love.graphics.newCubeImage("skybox.exr", { linear = true })
@@ -51,10 +59,8 @@ function love.load()
 
     love.mouse.setRelativeMode(true)
 
-    Target1 = love.graphics.newCanvas(love.graphics.getWidth(), love.graphics.getHeight(), { format = "rgba32f" })
-    Target2 = love.graphics.newCanvas(love.graphics.getWidth(), love.graphics.getHeight(), { format = "rgba32f" })
-
-    Targets = { Target1, Target2 }
+    Target = love.graphics.newCanvas(love.graphics.getWidth(), love.graphics.getHeight(),
+        { format = "rgba32f", computewrite = true })
 
     local materialformat = {
         { name = "albedo",              format = "floatvec3" },
@@ -426,40 +432,38 @@ function love.update(dt)
 end
 
 function love.draw()
-    love.graphics.setShader(Shaders.main)
-
     if Updated then
         Updated = false
         Frame = 0
 
-        love.graphics.setCanvas(Targets[1])
+        love.graphics.setCanvas(Target)
         love.graphics.clear()
-        love.graphics.setCanvas(Targets[2])
-        love.graphics.clear()
+
+        love.graphics.setCanvas()
     else
         Frame = Frame + 1
     end
 
-    love.graphics.setCanvas(Targets[Frame % 2 + 1])
 
     Shaders.main:send("InverseViewProjectionMatrix", "column", Camera.inverseViewProjectionMatrix)
     Shaders.main:send("CameraPosition", Camera.position:ttable())
     Shaders.main:send("RandomIndex", love.math.random(0, 2 ^ 32 - 1))
     Shaders.main:send("FrameIndex", Frame)
-    Shaders.main:send("PreviousFrame", Targets[(Frame + 1) % 2 + 1])
+    Shaders.main:send("CurrentFrame", Target)
     Shaders.main:send("DebugView", DebugView)
     Shaders.main:send("DebugViewMode", DebugMode)
     if Shaders.main:hasUniform("PreviousViewProjectionMatrix") then
         Shaders.main:send("PreviousViewProjectionMatrix", "column", Camera.previousViewProjectionMatrix)
     end
 
-    Shaders.main:send("FlipY", true)
-    love.graphics.drawFromShader("triangles", 3, 1)
+    local sx, sy, sz = Shaders.main:getLocalThreadgroupSize()
 
-    love.graphics.setShader()
-    love.graphics.setCanvas()
+    local iW, iH = love.graphics.getDimensions()
+    local x, y = math.ceil(iW / sx), math.ceil(iH / sy)
 
-    love.graphics.draw(Targets[Frame % 2 + 1])
+    Rhodium.graphics.dispatchThreadgroups(Shaders.main, x, y, 1)
+
+    love.graphics.draw(Target)
 
     love.graphics.print("FPS: " .. love.timer.getFPS(), 10, 10)
     love.graphics.print("Camera position: " .. tostring(Camera.position), 10, 30)
