@@ -50,17 +50,19 @@ function love.load()
     MAX_DEPTH = 22
 
     Shaders = {
-        main = Rhodium.graphics.newComputeShader("main.glsl"),
+        rayTrace = Rhodium.graphics.newComputeShader("rayTrace.glsl"),
+        rayInit = Rhodium.graphics.newComputeShader("rayInit.glsl"),
+        rayWrite = Rhodium.graphics.newComputeShader("rayWrite.glsl"),
     }
 
     Skybox = love.graphics.newCubeImage("skybox.exr", { linear = true })
 
-    Shaders.main:send("Skybox", Skybox)
+    Shaders.rayTrace:send("Skybox", Skybox)
 
     love.mouse.setRelativeMode(true)
 
-    Target = love.graphics.newCanvas(love.graphics.getWidth(), love.graphics.getHeight(),
-        { format = "rgba32f", computewrite = true })
+    Target = love.graphics.newTexture(love.graphics.getWidth(), love.graphics.getHeight(),
+        { format = "rgba32f", computewrite = true, canvas = true })
 
     local materialformat = {
         { name = "albedo",              format = "floatvec3" },
@@ -91,6 +93,18 @@ function love.load()
     local triangleCount = 0
 
     scale = 1
+
+    local width, height = love.graphics.getDimensions()
+    local rayCount = width * height
+
+    local rayBufferFormat = {
+        { name = "origin",        format = "floatvec3" },
+        { name = "direction",     format = "floatvec3" },
+        { name = "color",         format = "floatvec3" },
+        { name = "incomingLight", format = "floatvec3" },
+    }
+
+    RayBuffer = newBuffer(rayBufferFormat, rayCount, { shaderstorage = true, usage = "dynamic" })
 
     local albedoTextures = {}
     local normalTextures = {}
@@ -237,29 +251,35 @@ function love.load()
     triangleBuffer:write(triangles)
     triangleBuffer:flush()
 
-    Shaders.main:send("Triangles", triangleBuffer:getBuffer())
-    Shaders.main:send("Materials", materialsBuffer:getBuffer())
-    Shaders.main:send("BVHNodes", BvhBuffer:getBuffer())
+    Shaders.rayTrace:send("Triangles", triangleBuffer:getBuffer())
+    Shaders.rayTrace:send("Materials", materialsBuffer:getBuffer())
+    Shaders.rayTrace:send("BVHNodes", BvhBuffer:getBuffer())
 
-    if albedoTexture and Shaders.main:hasUniform("AlbedoTexture") then
-        Shaders.main:send("AlbedoTexture", albedoTexture)
-        Shaders.main:send("AlbedoBuffer", albedoBuffer:getBuffer())
+    if albedoTexture and Shaders.rayTrace:hasUniform("AlbedoTexture") then
+        Shaders.rayTrace:send("AlbedoTexture", albedoTexture)
+        Shaders.rayTrace:send("AlbedoBuffer", albedoBuffer:getBuffer())
     end
 
-    if normalTexture and Shaders.main:hasUniform("NormalTexture") then
-        Shaders.main:send("NormalTexture", normalTexture)
-        Shaders.main:send("NormalBuffer", normalBuffer:getBuffer())
+    if normalTexture and Shaders.rayTrace:hasUniform("NormalTexture") then
+        Shaders.rayTrace:send("NormalTexture", normalTexture)
+        Shaders.rayTrace:send("NormalBuffer", normalBuffer:getBuffer())
     end
 
-    if emissiveTexture and Shaders.main:hasUniform("EmissiveTexture") then
-        Shaders.main:send("EmissiveTexture", emissiveTexture)
-        Shaders.main:send("EmissiveBuffer", emissiveBuffer:getBuffer())
+    if emissiveTexture and Shaders.rayTrace:hasUniform("EmissiveTexture") then
+        Shaders.rayTrace:send("EmissiveTexture", emissiveTexture)
+        Shaders.rayTrace:send("EmissiveBuffer", emissiveBuffer:getBuffer())
     end
 
-    if metallicRoughnessTexture and Shaders.main:hasUniform("MetallicRoughnessTexture") then
-        Shaders.main:send("MetallicRoughnessTexture", metallicRoughnessTexture)
-        Shaders.main:send("MetallicRoughnessBuffer", metallicRoughnessBuffer:getBuffer())
+    if metallicRoughnessTexture and Shaders.rayTrace:hasUniform("MetallicRoughnessTexture") then
+        Shaders.rayTrace:send("MetallicRoughnessTexture", metallicRoughnessTexture)
+        Shaders.rayTrace:send("MetallicRoughnessBuffer", metallicRoughnessBuffer:getBuffer())
     end
+
+    Shaders.rayInit:send("RayInfoBuffer", RayBuffer:getBuffer())
+    Shaders.rayTrace:send("RayInfoBuffer", RayBuffer:getBuffer())
+    Shaders.rayWrite:send("RayInfoBuffer", RayBuffer:getBuffer())
+
+    MAX_BOUNCES = 4
 end
 
 function rotatePositionSeparate(x, y, z, qx, qy, qz, qw)
@@ -444,24 +464,38 @@ function love.draw()
         Frame = Frame + 1
     end
 
+    local sx, sy, sz = Shaders.rayInit:getLocalThreadgroupSize()
 
-    Shaders.main:send("InverseViewProjectionMatrix", "column", Camera.inverseViewProjectionMatrix)
-    Shaders.main:send("CameraPosition", Camera.position:ttable())
-    Shaders.main:send("RandomIndex", love.math.random(0, 2 ^ 32 - 1))
-    Shaders.main:send("FrameIndex", Frame)
-    Shaders.main:send("CurrentFrame", Target)
-    Shaders.main:send("DebugView", DebugView)
-    Shaders.main:send("DebugViewMode", DebugMode)
-    if Shaders.main:hasUniform("PreviousViewProjectionMatrix") then
-        Shaders.main:send("PreviousViewProjectionMatrix", "column", Camera.previousViewProjectionMatrix)
-    end
-
-    local sx, sy, sz = Shaders.main:getLocalThreadgroupSize()
+    Shaders.rayInit:send("CameraPosition", Camera.position:ttable())
+    Shaders.rayInit:send("InverseViewProjectionMatrix", "column", Camera.inverseViewProjectionMatrix)
+    Shaders.rayInit:send("ScreenSize", { love.graphics.getDimensions() })
+    Shaders.rayInit:send("RandomIndex", love.math.random(0, 2 ^ 32 - 1))
 
     local iW, iH = love.graphics.getDimensions()
     local x, y = math.ceil(iW / sx), math.ceil(iH / sy)
 
-    Rhodium.graphics.dispatchThreadgroups(Shaders.main, x, y, 1)
+    Rhodium.graphics.dispatchThreadgroups(Shaders.rayInit, x, y, 1)
+
+    local sx, sy, sz = Shaders.rayTrace:getLocalThreadgroupSize()
+
+    Shaders.rayTrace:send("RandomIndex", love.math.random(0, 2 ^ 32 - 1))
+
+    local iW, iH = love.graphics.getDimensions()
+    local x = math.ceil((iW * iH) / sx)
+
+    for i = 1, MAX_BOUNCES do
+        Rhodium.graphics.dispatchThreadgroups(Shaders.rayTrace, x, 1, 1)
+    end
+
+    local sx, sy, sz = Shaders.rayWrite:getLocalThreadgroupSize()
+    Shaders.rayWrite:send("FrameIndex", Frame)
+    Shaders.rayWrite:send("ScreenSize", { love.graphics.getDimensions() })
+    Shaders.rayWrite:send("CurrentFrame", Target)
+
+    local iW, iH = love.graphics.getDimensions()
+    local x, y = math.ceil(iW / sx), math.ceil(iH / sy)
+
+    Rhodium.graphics.dispatchThreadgroups(Shaders.rayWrite, x, y, 1)
 
     love.graphics.draw(Target)
 

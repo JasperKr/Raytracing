@@ -1,6 +1,6 @@
 #pragma language glsl4
 
-layout (local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 #define SKIP_VIEW_Z 1
 #define SKIP_GET_POSITION_DATA 1
@@ -47,15 +47,22 @@ struct BVHNode {
     uint TriangleCount;
 };
 
-readonly restrict buffer Triangles {
+struct RayInfo {
+    vec3 origin;
+    vec3 direction;
+    vec3 color;
+    vec3 incomingLight;
+};
+
+layout(std430, binding = 0) readonly restrict buffer Triangles {
     Triangle triangles[];
 };
 
-readonly restrict buffer Materials {
+layout(std430, binding = 1) readonly restrict buffer Materials {
     Material materials[];
 };
 
-layout(std430, binding = 0) readonly restrict buffer BVHNodes {
+layout(std430, binding = 2) readonly restrict buffer BVHNodes {
     BVHNode nodes[];
 };
 
@@ -65,20 +72,24 @@ uniform lowp sampler2DArray EmissiveTexture;
 uniform lowp sampler2DArray NormalTexture;
 uniform lowp sampler2DArray MetallicRoughnessTexture;
 
-layout(std430, binding = 0) readonly restrict buffer AlbedoBuffer {
+layout(std430, binding = 3) readonly restrict buffer AlbedoBuffer {
     TextureInfo albedoScales[];
 };
 
-layout(std430, binding = 1) readonly restrict buffer EmissiveBuffer {
+layout(std430, binding = 4) readonly restrict buffer EmissiveBuffer {
     TextureInfo emissiveScales[];
 };
 
-layout(std430, binding = 2) readonly restrict buffer NormalBuffer {
+layout(std430, binding = 5) readonly restrict buffer NormalBuffer {
     TextureInfo normalScales[];
 };
 
-layout(std430, binding = 3) readonly restrict buffer MetallicRoughnessBuffer {
+layout(std430, binding = 6) readonly restrict buffer MetallicRoughnessBuffer {
     TextureInfo metallicRoughnessScales[];
+};
+
+layout(std430, binding = 7) restrict buffer RayInfoBuffer {
+    RayInfo rayInfos[];
 };
 
 /// Textures ///
@@ -192,7 +203,7 @@ vec3 rayTriangle(Ray ray, uint triIndex) {
 
 #define MAX_DEPTH 23
 
-vec3 RayTriangleBVH(Ray ray, inout ivec2 amountChecked, out uint closestTriIndex)
+vec3 RayTriangleBVH(Ray ray, out uint closestTriIndex)
 {
     uint stack[MAX_DEPTH];
     int stackIndex = 0;
@@ -214,7 +225,6 @@ vec3 RayTriangleBVH(Ray ray, inout ivec2 amountChecked, out uint closestTriIndex
             for (uint i = 0u; i < node.TriangleCount; i++)
             {
                 vec3 distData = rayTriangle(ray, node.TriangleStart + i);
-                amountChecked.y++; // count triangle intersection tests
 
                 if (distData.x > 0.0 && distData.x < closestDistData.x)
                 {
@@ -232,7 +242,6 @@ vec3 RayTriangleBVH(Ray ray, inout ivec2 amountChecked, out uint closestTriIndex
 
             BVHNode childB = nodes[childIndexB];
             float dstB = rayBoxDistance(childB.Min, childB.Max, ray);
-            amountChecked.x += 2; // count bounding box intersection tests
             
             // We want to look at closest child node first, so push it last
             bool isNearestA = dstA <= dstB;
@@ -249,10 +258,10 @@ vec3 RayTriangleBVH(Ray ray, inout ivec2 amountChecked, out uint closestTriIndex
     return closestDistData;
 }
 
-vec3 checkRayIntersections(Ray ray, out uint closestTriIndex, inout ivec2 amountChecked)
+vec3 checkRayIntersections(Ray ray, out uint closestTriIndex)
 {
     // this function will be filled in later once i have separate models
-    vec3 closestDistData = RayTriangleBVH(ray, amountChecked, closestTriIndex);
+    vec3 closestDistData = RayTriangleBVH(ray, closestTriIndex);
 
     return closestDistData;
 }
@@ -272,157 +281,88 @@ const int MaxBounces = 4;
 const float GlobalFogDensity = 0.0;
 const vec3 GlobalFogColor = vec3(1.0, 1.0, 1.0);
 
-vec3 traceRay(Ray ray, inout uint state, inout ivec2 amountChecked, out float depth) {
-    vec3 rayColor = vec3(1.0);
+void traceRay(inout RayInfo ray, inout uint state) {
     vec3 rayIncomingLight = vec3(0.0);
 
-    for (int bounceIndex = 0; bounceIndex < MaxBounces; bounceIndex++)
-    {
-        uint triangleIndex;
+    uint triangleIndex;
 
-        vec3 distData = checkRayIntersections(ray, triangleIndex, amountChecked);
+    Ray rayData = Ray(ray.origin, ray.direction, 1.0 / ray.direction);
 
-        if (distData.x >= 1E6)
-            return rayIncomingLight + rayColor * sampleSkybox(ray);
+    vec3 distData = checkRayIntersections(rayData, triangleIndex);
 
-        if (bounceIndex == 0)
-            depth = distData.x;
-
-        if (exp(-GlobalFogDensity * distData.x) < RandomValue(state))
-        {
-            rayColor *= GlobalFogColor;
-
-            distData.x *= RandomValue(state);
-            ray.origin += ray.direction * distData.x;
-
-            ray.direction = RandomDirection(state);
-            ray.invDirection = 1.0 / ray.direction;
-
-            continue;
-        }
-
-        float u = distData.y;
-        float v = distData.z;
-        float w = 1.0 - u - v;
-
-        ray.origin += ray.direction * (distData.x + 0.0001);
-
-        Triangle triangle = triangles[triangleIndex];
-        uint materialIndex = triangle.material;
-        vec3 normal = triangle.normal;
-
-        vec2 finalUV = vec2(
-            w * triangle.A.w + u * triangle.B.w + v * triangle.C.w,
-            w * triangle.V.x + u * triangle.V.y + v * triangle.V.z
-        );
-
-        vec3[3] materialData = getMaterialData(materialIndex, finalUV);
-
-        vec3 albedo = materialData[0];
-        vec3 emissive = materialData[1];
-        float perceptualRoughness = materialData[2].x;
-        float metallic = materialData[2].y;
-
-        rayIncomingLight += emissive * rayColor;
-
-        float roughness = perceptualRoughness * perceptualRoughness;
-        float isDiffuseHit = float(RandomValue(state) > metallic);
-
-        if (isDiffuseHit > 0.0)
-        {
-            ray.direction = RandomHemisphereDirection(normal, state);
-        }
-        else
-        {
-            vec3 specularDirection = reflect(ray.direction, normal);
-            ray.direction = mix(specularDirection, RandomHemisphereDirection(specularDirection, state), roughness);
-            ray.direction *= sign(dot(ray.direction, normal));
-            ray.direction = normalize(ray.direction);
-        }
-
-        // rayColor *= mix(vec3(1.0), albedo, isDiffuseHit);
-        rayColor *= albedo;
-        ray.invDirection = 1.0 / ray.direction;
-
-        if (max(max(rayColor.r, rayColor.g), rayColor.b) < 0.01)
-            break;
-    }
-
-    return rayIncomingLight;
-}
-
-uniform highp uint RandomIndex;
-uniform highp sampler2D PreviousFrame;
-uniform highp uint FrameIndex;
-
-uniform bool DebugView;
-uniform mediump int DebugViewMode;
-
-uniform highp mat4 PreviousViewProjectionMatrix;
-
-vec3 reproject(vec3 position) {
-    position = position * 2.0 - 1.0;
-    vec4 world = mulVec3Matrix4x4(InverseViewProjectionMatrix, position);
-    world.xyz /= world.w;
-
-    vec4 clip = mulVec3Matrix4x4(PreviousViewProjectionMatrix, world.xyz);
-    clip.xyz /= clip.w;
-    return clip.xyz * 0.5 + 0.5;
-}
-
-layout(rgba32f, binding = 0) uniform highp restrict image2D CurrentFrame;
-
-void computemain() {
-    vec2 screen_coords = vec2(gl_GlobalInvocationID.xy);
-    vec2 screen_size = imageSize(CurrentFrame);
-
-    vec2 VarVertexCoord = (screen_coords + vec2(0.5)) / screen_size;
-
-    vec4 world = mulVec3Matrix4x4(InverseViewProjectionMatrix, vec3(VarVertexCoord * 2.0 - 1.0, 1.0));
-
-    vec3 rayDirection = normalize(world.xyz / world.w - CameraPosition);
-
-    uint pixelIndex = uint(screen_coords.y * screen_size.x + screen_coords.x);
-    uint rngState = pixelIndex + RandomIndex;
-
-    vec3 randomDirection = RandomHemisphereDirection(rayDirection, rngState);
-
-    const float jitterAmount = 0.001;
-
-    rayDirection = normalize(mix(rayDirection, randomDirection, jitterAmount));
-
-    Ray ray = Ray(CameraPosition, rayDirection, 1.0 / rayDirection);
-
-    ivec2 amountChecked = ivec2(0, 0);
-
-    float depth;
-    vec3 color = traceRay(ray, rngState, amountChecked, depth);
-
-    world.xyz = rayDirection * depth + CameraPosition;
-
-    // vec3 reprojected = reproject(world.xyz);
-    vec3 reprojected = vec3(VarVertexCoord, 0.0);
-
-    if (DebugView)
-    {   
-        if (DebugViewMode == 0) // Bounding box tests
-            if (amountChecked.x > 1000)
-                imageStore(CurrentFrame, ivec2(screen_coords), vec4(1.0, 0.0, 0.0, 1.0));
-            else
-                imageStore(CurrentFrame, ivec2(screen_coords), vec4(vec3(float(amountChecked.x) / 1000.0), 1.0));
-        else if (DebugViewMode == 1) // Triangle tests
-            if (amountChecked.y > 1000)
-                imageStore(CurrentFrame, ivec2(screen_coords), vec4(1.0, 0.0, 0.0, 1.0));
-            else
-                imageStore(CurrentFrame, ivec2(screen_coords), vec4(vec3(float(amountChecked.y) / 1000.0), 1.0));
-        else
-            imageStore(CurrentFrame, ivec2(screen_coords), vec4(color, 1.0));
+    if (distData.x >= 1E6) {
+        ray.incomingLight += ray.color * sampleSkybox(rayData);
         return;
     }
 
-    highp float contribution = 1.0 / float(FrameIndex + 1u);
+    if (exp(-GlobalFogDensity * distData.x) < RandomValue(state))
+    {
+        ray.color *= GlobalFogColor;
 
-    vec3 previousColor = imageLoad(CurrentFrame, ivec2(screen_coords)).rgb;
+        distData.x *= RandomValue(state);
+        ray.origin += ray.direction * distData.x;
 
-    imageStore(CurrentFrame, ivec2(screen_coords), vec4(mix(previousColor, color, contribution), 1.0));
+        ray.direction = RandomDirection(state);
+
+        return;
+    }
+
+    float u = distData.y;
+    float v = distData.z;
+    float w = 1.0 - u - v;
+
+    ray.origin += ray.direction * (distData.x + 0.0001);
+
+    Triangle triangle = triangles[triangleIndex];
+    uint materialIndex = triangle.material;
+    vec3 normal = triangle.normal;
+
+    vec2 finalUV = vec2(
+        w * triangle.A.w + u * triangle.B.w + v * triangle.C.w,
+        w * triangle.V.x + u * triangle.V.y + v * triangle.V.z
+    );
+
+    vec3[3] materialData = getMaterialData(materialIndex, finalUV);
+
+    vec3 albedo = materialData[0];
+    vec3 emissive = materialData[1];
+    float perceptualRoughness = materialData[2].x;
+    float metallic = materialData[2].y;
+
+    ray.incomingLight += emissive * ray.color;
+
+    float roughness = perceptualRoughness * perceptualRoughness;
+    float isDiffuseHit = float(RandomValue(state) > metallic);
+
+    if (isDiffuseHit > 0.0)
+    {
+        ray.direction = RandomHemisphereDirection(normal, state);
+    }
+    else
+    {
+        vec3 specularDirection = reflect(ray.direction, normal);
+        ray.direction = mix(specularDirection, RandomHemisphereDirection(specularDirection, state), roughness);
+        ray.direction *= sign(dot(ray.direction, normal));
+        ray.direction = normalize(ray.direction);
+    }
+
+    ray.color *= albedo;
+}
+
+uniform highp uint RandomIndex;
+
+void computemain() {
+    uint pixelIndex = gl_GlobalInvocationID.x;
+    uint rngState = pixelIndex + RandomIndex;
+
+    RayInfo rayInfo = rayInfos[pixelIndex];
+
+    if (max(max(rayInfo.color.r, rayInfo.color.g), rayInfo.color.b) < 0.01)
+    {
+        return;
+    }
+
+    traceRay(rayInfo, rngState);
+
+    rayInfos[pixelIndex] = rayInfo;
 }
