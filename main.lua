@@ -47,7 +47,7 @@ function love.load()
     Camera.previousInverseViewProjectionMatrix = Camera.inverseViewProjectionMatrix
     Camera.previousInverseViewMatrix = Camera.inverseViewMatrix
 
-    MAX_DEPTH = 22
+    MAX_DEPTH = 28
 
     Shaders = {
         rayTrace = Rhodium.graphics.newComputeShader("rayTrace.glsl"),
@@ -75,19 +75,12 @@ function love.load()
         { name = "materialIndex",       format = "int32" },
     }
 
-    local triangleFormat = {
-        { name = "posAU",    format = "floatvec4" },
-        { name = "posBU",    format = "floatvec4" },
-        { name = "posCU",    format = "floatvec4" },
-        { name = "V",        format = "floatvec3" },
-        { name = "material", format = "uint32" },
-        { name = "normal",   format = "floatvec3" },
-    }
+    print("Loading meshes...")
 
     -- local meshes = Rhodium.graphics.loadGltfFile("Sponza/sponza.gltf")
     local meshes = Rhodium.graphics.loadGltfFile("sponza_with_light.glb")
+    -- local meshes = Rhodium.graphics.loadGltfFile("sponza.glb")
 
-    local triangleBuffer = newBuffer(triangleFormat, 1, { shaderstorage = true, usage = "static" })
     local triangles = {}
 
     local triangleCount = 0
@@ -110,6 +103,8 @@ function love.load()
     local normalTextures = {}
     local emissiveTextures = {}
     local metallicRoughnessTextures = {}
+
+    print("Preparing triangle data...")
 
     for j, mesh in ipairs(meshes) do
         ---@type love.ByteData, love.ByteData
@@ -160,15 +155,25 @@ function love.load()
             local c = vertices[indices[(i - 1) * 3 + 3]]
 
             table.insert(triangles, {
-                a[1], a[2], a[3], a[4],
-                b[1], b[2], b[3], b[4],
-                c[1], c[2], c[3], c[4],
-                a[5], b[5], c[5],
+                -- positions
+                a[1], a[2], a[3],
+                b[1], b[2], b[3],
+                c[1], c[2], c[3],
+                -- material
                 j - 1,
+                -- uvs
+                a[4], a[5],
+                b[4], b[5],
+                c[4], c[5],
+                -- normals
                 a[6], a[7], a[8],
+                b[6], b[7], b[8],
+                c[6], c[7], c[8],
             })
         end
     end
+
+    print("Preparing materials...")
 
     local materialsBuffer = newBuffer(materialformat, #meshes, { shaderstorage = true })
 
@@ -242,16 +247,72 @@ function love.load()
 
     materialsBuffer:flush()
 
+    print("Building BVH...")
+    local t = love.timer.getTime()
+
     local node = newBvhTree(triangles)
     node.triangleCount = triangleCount
 
+    print("Building BVH... Done! Took " .. love.timer.getTime() - t .. " seconds")
+    print("Uploading data to GPU...")
+    t = love.timer.getTime()
     sendBVHData()
 
-    triangleBuffer:resize(triangleCount)
-    triangleBuffer:write(triangles)
-    triangleBuffer:flush()
+    print("Uploading data to GPU... Done! Took " .. love.timer.getTime() - t .. " seconds")
 
-    Shaders.rayTrace:send("Triangles", triangleBuffer:getBuffer())
+    local trianglePositionFormat = {
+        -- { name = "posA", format = "floatvec3" },
+        -- { name = "posB", format = "floatvec3" },
+        -- { name = "posC", format = "floatvec3" },
+    }
+
+    for i = 1, 9 do table.insert(trianglePositionFormat, { name = "pos" .. i, format = "float" }) end
+
+    local triangleDataFormat = {
+        { name = "UV_A",          format = "floatvec2" },
+        { name = "UV_B",          format = "floatvec2" },
+        { name = "UV_C",          format = "floatvec2" },
+        { name = "materialIndex", format = "uint32" },
+        { name = "normalA",       format = "floatvec3" },
+        { name = "normalB",       format = "floatvec3" },
+        { name = "normalC",       format = "floatvec3" },
+    }
+
+    print("Preparing triangle data buffers...")
+
+    local trianglePositionBuffer = newBuffer(
+        trianglePositionFormat, triangleCount, { shaderstorage = true, usage = "static" })
+
+    local triangleDataBuffer = newBuffer(
+        triangleDataFormat, triangleCount, { shaderstorage = true, usage = "static" })
+
+    for i = 1, triangleCount do
+        local triangle = triangles[i]
+
+        trianglePositionBuffer:writeMany(
+            triangle[1], triangle[2], triangle[3],
+            triangle[4], triangle[5], triangle[6],
+            triangle[7], triangle[8], triangle[9]
+        )
+
+        triangleDataBuffer:writeMany(
+            triangle[11], triangle[12],
+            triangle[13], triangle[14],
+            triangle[15], triangle[16],
+
+            triangle[10],
+
+            triangle[17], triangle[18], triangle[19],
+            triangle[20], triangle[21], triangle[22],
+            triangle[23], triangle[24], triangle[25]
+        )
+    end
+
+    trianglePositionBuffer:flush()
+    triangleDataBuffer:flush()
+
+    Shaders.rayTrace:send("Triangles", trianglePositionBuffer:getBuffer())
+    Shaders.rayTrace:send("TriangleDatas", triangleDataBuffer:getBuffer())
     Shaders.rayTrace:send("Materials", materialsBuffer:getBuffer())
     Shaders.rayTrace:send("BVHNodes", BvhBuffer:getBuffer())
 
@@ -280,6 +341,10 @@ function love.load()
     Shaders.rayWrite:send("RayInfoBuffer", RayBuffer:getBuffer())
 
     MAX_BOUNCES = 4
+
+    Shaders.rayWrite:send("CurrentFrame", Target)
+
+    print("Done!")
 end
 
 function rotatePositionSeparate(x, y, z, qx, qy, qz, qw)
@@ -406,7 +471,7 @@ end
 Updated = true
 DebugView = false
 DebugMode = 0
-Frame = 0
+Frame = 1
 
 function love.update(dt)
     if love.mouse.isDown(2) then
@@ -454,7 +519,7 @@ end
 function love.draw()
     if Updated then
         Updated = false
-        Frame = 0
+        Frame = 1
 
         love.graphics.setCanvas(Target)
         love.graphics.clear()
@@ -490,7 +555,6 @@ function love.draw()
     local sx, sy, sz = Shaders.rayWrite:getLocalThreadgroupSize()
     Shaders.rayWrite:send("FrameIndex", Frame)
     Shaders.rayWrite:send("ScreenSize", { love.graphics.getDimensions() })
-    Shaders.rayWrite:send("CurrentFrame", Target)
 
     local iW, iH = love.graphics.getDimensions()
     local x, y = math.ceil(iW / sx), math.ceil(iH / sy)
@@ -514,6 +578,8 @@ function love.draw()
     end
 
     love.graphics.print("Debug mode: " .. tostring(DebugMode) .. "(" .. modeString .. ")", 10, 70)
+    love.graphics.print("Frame: " .. tostring(Frame), 10, 90)
+    love.graphics.print("Max bounces: " .. tostring(MAX_BOUNCES), 10, 110)
 end
 
 function love.mousemoved(x, y, dx, dy)
@@ -536,5 +602,13 @@ function love.keypressed(key)
 
     if key == "f2" then
         DebugMode = (DebugMode + 1) % 3
+    end
+
+    if key == "q" then
+        MAX_BOUNCES = MAX_BOUNCES - 1
+    end
+
+    if key == "e" then
+        MAX_BOUNCES = MAX_BOUNCES + 1
     end
 end

@@ -428,6 +428,18 @@ function bufferFunctions:write(value)
     return self
 end
 
+--- writes many values to the buffer iteratively,
+--- can be used in a for-loop to write all the data
+--- @param ... number|vec2|vec3|vec4|quaternion|matrix3x3|matrix4x4|table
+--- @return buffer
+function bufferFunctions:writeMany(...)
+    for i = 1, select("#", ...) do
+        self.writeIndex = self:setAt(self.writeIndex, select(i, ...))
+    end
+
+    return self
+end
+
 --- writes to the buffer iteratively,
 --- can be used in a for-loop to write all the data
 --- @param value number float value
@@ -437,6 +449,18 @@ function bufferFunctions:writeFloat(value)
     self.dataReferences.float[arrayIndex] = value
 
     self.writeIndex = self.writeIndex + 1
+
+    return self
+end
+
+--- writes many values to the buffer iteratively,
+--- can be used in a for-loop to write all the data
+--- @param ... number|ffi.cdata*
+--- @return buffer
+function bufferFunctions:writeFloatMany(...)
+    for i = 1, select("#", ...) do
+        self:writeFloat(select(i, ...))
+    end
 
     return self
 end
@@ -456,6 +480,17 @@ end
 
 --- writes to the buffer iteratively,
 --- can be used in a for-loop to write all the data
+--- @param ... number|ffi.cdata*
+function bufferFunctions:writeIntMany(...)
+    for i = 1, select("#", ...) do
+        self:writeInt(select(i, ...))
+    end
+
+    return self
+end
+
+--- writes to the buffer iteratively,
+--- can be used in a for-loop to write all the data
 --- @param value number uint value
 function bufferFunctions:writeUint(value)
     local arrayIndex = self:getArrayIndex(self.writeIndex)
@@ -463,6 +498,17 @@ function bufferFunctions:writeUint(value)
     self.dataReferences.uint32_t[arrayIndex] = value
 
     self.writeIndex = self.writeIndex + 1
+
+    return self
+end
+
+--- writes to the buffer iteratively,
+--- can be used in a for-loop to write all the data
+--- @param ... number|ffi.cdata*
+function bufferFunctions:writeUIntMany(...)
+    for i = 1, select("#", ...) do
+        self:writeUint(select(i, ...))
+    end
 
     return self
 end

@@ -32,12 +32,38 @@ struct Material {
 };
 
 struct Triangle {
-    vec4 A; // Position and u
-    vec4 B; // Position and u
-    vec4 C; // Position and u
-    vec3 V; // v for a, b, c
+    vec3 A; // Position
+    vec3 B; // Position
+    vec3 C; // Position
+};
+
+struct PackedTriangle {
+    float data0;
+    float data1;
+    float data2;
+
+    float data3;
+    float data4;
+    float data5;
+
+    float data6;
+    float data7;
+    float data8;
+};
+
+struct TriangleData {
+    vec2 UV_A;
+    vec2 UV_B;
+    vec2 UV_C;
     uint material;
-    vec3 normal;
+    vec3 normal_A;
+    vec3 normal_B;
+    vec3 normal_C;
+};
+
+struct PackedTriangleData {
+    float[15] data;
+    uint material;
 };
 
 struct BVHNode {
@@ -55,14 +81,18 @@ struct RayInfo {
 };
 
 layout(std430, binding = 0) readonly restrict buffer Triangles {
-    Triangle triangles[];
+    PackedTriangle triangles[];
 };
 
-layout(std430, binding = 1) readonly restrict buffer Materials {
+layout(std430, binding = 1) readonly restrict buffer TriangleDatas {
+    TriangleData triangleDatas[];
+};
+
+layout(std430, binding = 2) readonly restrict buffer Materials {
     Material materials[];
 };
 
-layout(std430, binding = 2) readonly restrict buffer BVHNodes {
+layout(std430, binding = 3) readonly restrict buffer BVHNodes {
     BVHNode nodes[];
 };
 
@@ -100,15 +130,30 @@ struct Ray {
     vec3 invDirection;
 };
 
+float fastLog(float x)
+{
+    uint bx = floatBitsToUint(x);
+    uint ex = bx >> 23u;
+    int t = int(ex) - 127;
+    uint s = abs(t);
+
+    bx = 1065353216u | (bx & 8388607u);
+    x = uintBitsToFloat(bx);
+
+    return -1.49278 + (2.11263 + (-0.729104 + 0.10969 * x) * x) * x + 0.6931471806 * float(t);
+}
+
 float RandomValue(inout uint state) {
-    state = state * uint(747796405) + uint(2891336453);
-    uint result = ((state >> ((state >> 28) + uint(4))) ^ state) * uint(277803737);
+    state = state * 747796405u + 2891336453u;
+    uint result = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
     result = (result >> 22) ^ result;
     return float(result) / 4294967295.0;
 }
 
+const float PI2 = 2.0 * PI;
+
 float RandomNormalDistributionValue(inout uint state) {
-    float t = 2.0 * PI * RandomValue(state);
+    float t = PI2 * RandomValue(state);
     float r = sqrt(-2.0 * log(RandomValue(state)));
     return r * cos(t);
 }
@@ -169,39 +214,29 @@ vec3[3] getMaterialData(uint materialIndex, vec2 uv)
 }
 
 vec3 rayTriangle(Ray ray, uint triIndex) {
-    Triangle triangle = triangles[triIndex];
+    PackedTriangle triangle = triangles[triIndex];
 
-    vec3 bmin = min(min(triangle.A.xyz, triangle.B.xyz), triangle.C.xyz);
-    vec3 bmax = max(max(triangle.A.xyz, triangle.B.xyz), triangle.C.xyz);
+    vec3 A = vec3(triangle.data0, triangle.data1, triangle.data2);
+    vec3 AB = vec3(triangle.data3, triangle.data4, triangle.data5) - A;
+    vec3 AC = vec3(triangle.data6, triangle.data7, triangle.data8) - A;
+    vec3 normal = cross(AB, AC);
+    vec3 AO = ray.origin - A;
+    vec3 DAO = cross(AO, ray.direction);
 
-    bmin -= 0.01;
-    bmax += 0.01;
+    float det = -dot(ray.direction, normal);
+    float invDet = 1.0 / det;
 
-    if (rayBoxDistance(bmin, bmax, ray) < 1E6)
-    {
-        vec3 AB = triangle.B.xyz - triangle.A.xyz;
-        vec3 AC = triangle.C.xyz - triangle.A.xyz;
-        vec3 normal = cross(AB, AC);
-        vec3 AO = ray.origin - triangle.A.xyz;
-        vec3 DAO = cross(AO, ray.direction);
+    float dist = dot(AO, normal) * invDet;
+    float u = dot(AC, DAO) * invDet;
+    float v = -dot(AB, DAO) * invDet;
+    float w = 1.0 - u - v;
 
-        float det = -dot(ray.direction, normal);
-        float invDet = 1.0 / det;
-
-        float dist = dot(AO, normal) * invDet;
-        float u = dot(AC, DAO) * invDet;
-        float v = -dot(AB, DAO) * invDet;
-        float w = 1.0 - u - v;
-
-        float hit = float(det > 1E-6 && dist >= 0.0 && u >= 0.0 && v >= 0.0 && w >= 0.0);
-        
-        return vec3(mix(-1.0, dist, hit), u, v);
-    }
-
-    return vec3(-1.0);
+    float hit = float(dist >= 0.0 && u >= 0.0 && v >= 0.0 && w >= 0.0);
+    
+    return vec3(mix(-1.0, dist, hit), u, v);
 }
 
-#define MAX_DEPTH 23
+#define MAX_DEPTH 28
 
 vec3 RayTriangleBVH(Ray ray, out uint closestTriIndex)
 {
@@ -235,7 +270,7 @@ vec3 RayTriangleBVH(Ray ray, out uint closestTriIndex)
         }
         else
         {
-            uint childIndexA = node.TriangleStart + 0u;
+            uint childIndexA = node.TriangleStart;
             uint childIndexB = node.TriangleStart + 1u;
             BVHNode childA = nodes[childIndexA];
             float dstA = rayBoxDistance(childA.Min, childA.Max, ray);
@@ -270,14 +305,13 @@ uniform mediump samplerCube Skybox;
 uniform highp vec3 CameraPosition;
 uniform highp mat4 InverseViewProjectionMatrix;
 
-const float skyboxBrightness = 0.0;
+const float skyboxBrightness = 1.0;
 
 vec3 sampleSkybox(Ray ray)
 {
     return texture(Skybox, ray.direction).rgb * skyboxBrightness;
 }
 
-const int MaxBounces = 4;
 const float GlobalFogDensity = 0.0;
 const vec3 GlobalFogColor = vec3(1.0, 1.0, 1.0);
 
@@ -292,6 +326,7 @@ void traceRay(inout RayInfo ray, inout uint state) {
 
     if (distData.x >= 1E6) {
         ray.incomingLight += ray.color * sampleSkybox(rayData);
+        ray.color *= 0.0; // ray has hit nothing, so it's done
         return;
     }
 
@@ -311,30 +346,49 @@ void traceRay(inout RayInfo ray, inout uint state) {
     float v = distData.z;
     float w = 1.0 - u - v;
 
-    ray.origin += ray.direction * (distData.x + 0.0001);
+    ray.origin += ray.direction * (distData.x - 0.0001);
 
-    Triangle triangle = triangles[triangleIndex];
+    TriangleData triangle = triangleDatas[triangleIndex];
     uint materialIndex = triangle.material;
-    vec3 normal = triangle.normal;
 
-    vec2 finalUV = vec2(
-        w * triangle.A.w + u * triangle.B.w + v * triangle.C.w,
-        w * triangle.V.x + u * triangle.V.y + v * triangle.V.z
-    );
+    vec3 normal = triangle.normal_A * w + triangle.normal_B * u + triangle.normal_C * v;
+    vec2 uv = w * triangle.UV_A + u * triangle.UV_B + v * triangle.UV_C;
 
-    vec3[3] materialData = getMaterialData(materialIndex, finalUV);
+    // Material data
 
-    vec3 albedo = materialData[0];
-    vec3 emissive = materialData[1];
-    float perceptualRoughness = materialData[2].x;
-    float metallic = materialData[2].y;
+    Material material = materials[materialIndex];
+
+    vec3 albedo = material.albedo;
+    if (material.albedoIndex >= 0)
+    {
+        vec2 scale = albedoScales[material.albedoIndex].scale;
+        albedo = texture(AlbedoTexture, vec3(uv * scale, material.albedoIndex)).rgb;
+    }
+    
+    vec3 emissive = material.emissive;
+    if (material.emissiveIndex >= 0)
+    {
+        vec2 scale = emissiveScales[material.emissiveIndex].scale;
+        emissive *= texture(EmissiveTexture, vec3(uv * scale, material.emissiveIndex)).rgb;
+    }
+    
+    float perceptualRoughness = material.perceptualRoughness;
+    float metallic = material.metallic;
+    if (material.materialIndex >= 0)
+    {
+        vec2 scale = metallicRoughnessScales[material.materialIndex].scale;
+        vec2 data = texture(MetallicRoughnessTexture, vec3(uv * scale, material.materialIndex)).gb;
+        perceptualRoughness = max(MIN_PERCEPTUAL_ROUGHNESS, data.x);
+        metallic = data.y;
+    }
+
+    // Material data
 
     ray.incomingLight += emissive * ray.color;
 
     float roughness = perceptualRoughness * perceptualRoughness;
-    float isDiffuseHit = float(RandomValue(state) > metallic);
-
-    if (isDiffuseHit > 0.0)
+    
+    if (RandomValue(state) > metallic)
     {
         ray.direction = RandomHemisphereDirection(normal, state);
     }

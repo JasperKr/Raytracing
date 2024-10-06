@@ -72,7 +72,7 @@ void computemain() {
 
     vec3 randomDirection = RandomHemisphereDirection(rayDirection, rngState);
 
-    const float jitterAmount = 0.001;
+    const float jitterAmount = 0.002;
 
     rayDirection = normalize(mix(rayDirection, randomDirection, jitterAmount));
 

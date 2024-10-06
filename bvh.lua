@@ -5,7 +5,7 @@ local bvhFormat = {
     { name = "TriangleCount", format = "uint32" },
 }
 
-BvhBuffer = newBuffer(bvhFormat, 1, { shaderstorage = true })
+BvhBuffer = newBuffer(bvhFormat, 1, { shaderstorage = true, usage = "static" })
 
 local nodes = {}
 
@@ -75,15 +75,30 @@ function boundsFunctions:getSize()
     return self.max - self.min
 end
 
+local outSize = vec3()
+function boundsFunctions:getSizeTemp()
+    mathv.sub3(self.max, self.min, outSize)
+    return outSize
+end
+
 function boundsFunctions:getCenter()
     return (self.min + self.max) / 2
 end
 
---- Expands the bounds to include the given triangle
----@param triangle triangle
-function boundsFunctions:include(triangle)
-    self.min:min(triangle.min)
-    self.max:max(triangle.max)
+do
+    local min, max = math.min, math.max
+
+    --- Expands the bounds to include the given triangle
+    ---@param triangle triangle
+    function boundsFunctions:include(triangle)
+        self.min.x = min(self.min.x, triangle.min.x)
+        self.min.y = min(self.min.y, triangle.min.y)
+        self.min.z = min(self.min.z, triangle.min.z)
+
+        self.max.x = max(self.max.x, triangle.max.x)
+        self.max.y = max(self.max.y, triangle.max.y)
+        self.max.z = max(self.max.z, triangle.max.z)
+    end
 end
 
 local bvhTreeMetatable = {}
@@ -101,12 +116,15 @@ function newBvhTree(triangles)
         triangles = triangles,
     }
 
+    print("Preparing triangle data...")
+    local t = love.timer.getTime()
+
     local min, max = vec3(math.huge), vec3(-math.huge)
 
     for i, triangle in ipairs(triangles) do
         local x1, y1, z1 = triangle[1], triangle[2], triangle[3]
-        local x2, y2, z2 = triangle[5], triangle[6], triangle[7]
-        local x3, y3, z3 = triangle[9], triangle[10], triangle[11]
+        local x2, y2, z2 = triangle[4], triangle[5], triangle[6]
+        local x3, y3, z3 = triangle[7], triangle[8], triangle[9]
 
         triangle.center = vec3(x1 + x2 + x3, y1 + y2 + y3, z1 + z2 + z3) / 3
         triangle.min = vec3(math.min(x1, x2, x3), math.min(y1, y2, y3), math.min(z1, z2, z3))
@@ -115,6 +133,8 @@ function newBvhTree(triangles)
         min:min(triangle.min)
         max:max(triangle.max)
     end
+
+    print("Triangle data prepared in ", love.timer.getTime() - t, "s")
 
     newNode(newBounds(min, max), 1, 0)
 
@@ -140,7 +160,7 @@ function splitTree(parentIndex, triangles, triGlobalStart, triNum, depth)
 
     local parent = nodes[parentIndex]
 
-    local size = parent.bounds:getSize()
+    local size = parent.bounds:getSizeTemp()
     local parentCost = nodeCost(size, triNum);
 
     local splitAxis, splitPos, cost = chooseSplit(triangles, parent, triGlobalStart, triNum);
@@ -153,28 +173,15 @@ function splitTree(parentIndex, triangles, triGlobalStart, triNum, depth)
         for i = triGlobalStart, triGlobalStart + triNum - 1 do
             local triangle = triangles[i]
 
-            local x1, y1, z1 = triangle[1], triangle[2], triangle[3]
-            local x2, y2, z2 = triangle[5], triangle[6], triangle[7]
-            local x3, y3, z3 = triangle[9], triangle[10], triangle[11]
-
-            center:set(x1 + x2 + x3, y1 + y2 + y3, z1 + z2 + z3)
-
-            center.x = center.x / 3
-            center.y = center.y / 3
-            center.z = center.z / 3
-
-            local minX, minY, minZ = math.min(x1, x2, x3), math.min(y1, y2, y3), math.min(z1, z2, z3)
-            local maxX, maxY, maxZ = math.max(x1, x2, x3), math.max(y1, y2, y3), math.max(z1, z2, z3)
-
-            if center[splitAxis] < splitPos then
-                growToInclude(boundsLeft, minX, minY, minZ, maxX, maxY, maxZ)
+            if triangle.center[splitAxis] < splitPos then
+                growToInclude(boundsLeft, triangle)
 
                 swap = triangles[triGlobalStart + numOnLeft];
                 triangles[triGlobalStart + numOnLeft] = triangle;
                 triangles[i] = swap;
                 numOnLeft = numOnLeft + 1;
             else
-                growToInclude(boundsRight, minX, minY, minZ, maxX, maxY, maxZ)
+                growToInclude(boundsRight, triangle)
             end
         end
 
@@ -242,37 +249,48 @@ function chooseSplit(triangles, node, start, count)
     return bestSplitAxis, bestSplitPos, bestCost
 end
 
---- Evaluate the cost of a split
----@param triangles table
----@param splitAxis "x"|"y"|"z"
----@param splitPos number
----@param start number
----@param count number
-function evaluateSplit(triangles, splitAxis, splitPos, start, count)
+do
     local boundsLeft = newBounds()
     local boundsRight = newBounds()
 
-    local numOnLeft = 0
-    local numOnRight = 0
+    local sizeA = vec3()
+    local sizeB = vec3()
 
-    for i = start, start + count - 1 do
-        local tri = triangles[i]
+    --- Evaluate the cost of a split
+    ---@param triangles table
+    ---@param splitAxis "x"|"y"|"z"
+    ---@param splitPos number
+    ---@param start number
+    ---@param count number
+    function evaluateSplit(triangles, splitAxis, splitPos, start, count)
+        local numOnLeft = 0
+        local numOnRight = 0
 
-        if (tri.center[splitAxis] < splitPos) then
-            boundsLeft:include(tri)
-            numOnLeft = numOnLeft + 1
-        else
-            boundsRight:include(tri)
-            numOnRight = numOnRight + 1
+        boundsLeft.min:set(math.huge, math.huge, math.huge)
+        boundsLeft.max:set(-math.huge, -math.huge, -math.huge)
+
+        boundsRight.min:set(math.huge, math.huge, math.huge)
+        boundsRight.max:set(-math.huge, -math.huge, -math.huge)
+
+        for i = start, start + count - 1 do
+            local tri = triangles[i]
+
+            if (tri.center[splitAxis] < splitPos) then
+                boundsLeft:include(tri)
+                numOnLeft = numOnLeft + 1
+            else
+                boundsRight:include(tri)
+                numOnRight = numOnRight + 1
+            end
         end
+
+        mathv.sub3(boundsLeft.max, boundsLeft.min, sizeA)
+        mathv.sub3(boundsRight.max, boundsRight.min, sizeB)
+
+        local costA = nodeCost(sizeA, numOnLeft)
+        local costB = nodeCost(sizeB, numOnRight)
+        return costA + costB;
     end
-
-    local sizeA = boundsLeft.max - boundsLeft.min
-    local sizeB = boundsRight.max - boundsRight.min
-
-    local costA = nodeCost(sizeA, numOnLeft)
-    local costB = nodeCost(sizeB, numOnRight)
-    return costA + costB;
 end
 
 --- Calculate the cost of a node
@@ -283,17 +301,21 @@ function nodeCost(size, numTriangles)
     return halfArea * numTriangles;
 end
 
---- Grows the bounding box to include the given bounds
----@param bbox bounds
----@param minX number
----@param minY number
----@param minZ number
----@param maxX number
----@param maxY number
----@param maxZ number
-function growToInclude(bbox, minX, minY, minZ, maxX, maxY, maxZ)
-    bbox.min:minSeparate(minX, minY, minZ)
-    bbox.max:maxSeparate(maxX, maxY, maxZ)
+do
+    local min, max = math.min, math.max
+
+    --- Grows the bounding box to include the given bounds
+    ---@param bbox bounds
+    ---@param triangle triangle
+    function growToInclude(bbox, triangle)
+        bbox.min.x = min(bbox.min.x, triangle.min.x)
+        bbox.min.y = min(bbox.min.y, triangle.min.y)
+        bbox.min.z = min(bbox.min.z, triangle.min.z)
+
+        bbox.max.x = max(bbox.max.x, triangle.max.x)
+        bbox.max.y = max(bbox.max.y, triangle.max.y)
+        bbox.max.z = max(bbox.max.z, triangle.max.z)
+    end
 end
 
 function sendBVHData()

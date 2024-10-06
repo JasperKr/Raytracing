@@ -39,9 +39,9 @@ void computemain() {
 
     RayInfo rayInfo = rayInfos[pixelIndex];
 
-    highp float contribution = 1.0 / float(FrameIndex + 1u);
+    highp float contribution = 1.0 / float(FrameIndex);
 
-    vec3 previousColor = imageLoad(CurrentFrame, ivec2(screen_coords)).rgb;
+    highp vec3 previousColor = imageLoad(CurrentFrame, ivec2(screen_coords)).rgb;
 
     imageStore(CurrentFrame, ivec2(screen_coords), vec4(mix(previousColor, rayInfo.incomingLight, contribution), 1.0));
 }
