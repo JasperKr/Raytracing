@@ -516,6 +516,44 @@ function love.update(dt)
     end
 end
 
+function init()
+    local sx, sy, sz = Shaders.rayInit:getLocalThreadgroupSize()
+
+    Shaders.rayInit:send("CameraPosition", Camera.position:ttable())
+    Shaders.rayInit:send("InverseViewProjectionMatrix", "column", Camera.inverseViewProjectionMatrix)
+    Shaders.rayInit:send("ScreenSize", { love.graphics.getDimensions() })
+    Shaders.rayInit:send("RandomIndex", love.math.random(0, 2 ^ 32 - 1))
+
+    local iW, iH = love.graphics.getDimensions()
+    local x, y = math.ceil(iW / sx), math.ceil(iH / sy)
+
+    Rhodium.graphics.dispatchThreadgroups(Shaders.rayInit, x, y, 1)
+end
+
+function trace()
+    local sx, sy, sz = Shaders.rayTrace:getLocalThreadgroupSize()
+
+    Shaders.rayTrace:send("RandomIndex", love.math.random(0, 2 ^ 32 - 1))
+
+    local iW, iH = love.graphics.getDimensions()
+    local x = math.ceil((iW * iH) / sx)
+
+    for i = 1, MAX_BOUNCES do
+        Rhodium.graphics.dispatchThreadgroups(Shaders.rayTrace, x, 1, 1)
+    end
+end
+
+function write()
+    local sx, sy, sz = Shaders.rayWrite:getLocalThreadgroupSize()
+    Shaders.rayWrite:send("FrameIndex", Frame)
+    Shaders.rayWrite:send("ScreenSize", { love.graphics.getDimensions() })
+
+    local iW, iH = love.graphics.getDimensions()
+    local x, y = math.ceil(iW / sx), math.ceil(iH / sy)
+
+    Rhodium.graphics.dispatchThreadgroups(Shaders.rayWrite, x, y, 1)
+end
+
 function love.draw()
     if Updated then
         Updated = false
@@ -529,37 +567,9 @@ function love.draw()
         Frame = Frame + 1
     end
 
-    local sx, sy, sz = Shaders.rayInit:getLocalThreadgroupSize()
-
-    Shaders.rayInit:send("CameraPosition", Camera.position:ttable())
-    Shaders.rayInit:send("InverseViewProjectionMatrix", "column", Camera.inverseViewProjectionMatrix)
-    Shaders.rayInit:send("ScreenSize", { love.graphics.getDimensions() })
-    Shaders.rayInit:send("RandomIndex", love.math.random(0, 2 ^ 32 - 1))
-
-    local iW, iH = love.graphics.getDimensions()
-    local x, y = math.ceil(iW / sx), math.ceil(iH / sy)
-
-    Rhodium.graphics.dispatchThreadgroups(Shaders.rayInit, x, y, 1)
-
-    local sx, sy, sz = Shaders.rayTrace:getLocalThreadgroupSize()
-
-    Shaders.rayTrace:send("RandomIndex", love.math.random(0, 2 ^ 32 - 1))
-
-    local iW, iH = love.graphics.getDimensions()
-    local x = math.ceil((iW * iH) / sx)
-
-    for i = 1, MAX_BOUNCES do
-        Rhodium.graphics.dispatchThreadgroups(Shaders.rayTrace, x, 1, 1)
-    end
-
-    local sx, sy, sz = Shaders.rayWrite:getLocalThreadgroupSize()
-    Shaders.rayWrite:send("FrameIndex", Frame)
-    Shaders.rayWrite:send("ScreenSize", { love.graphics.getDimensions() })
-
-    local iW, iH = love.graphics.getDimensions()
-    local x, y = math.ceil(iW / sx), math.ceil(iH / sy)
-
-    Rhodium.graphics.dispatchThreadgroups(Shaders.rayWrite, x, y, 1)
+    init()
+    trace()
+    write()
 
     love.graphics.draw(Target)
 

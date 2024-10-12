@@ -9,6 +9,18 @@ BvhBuffer = newBuffer(bvhFormat, 1, { shaderstorage = true, usage = "static" })
 
 local nodes = {}
 
+ffi.cdef [[
+    typedef struct {
+        double x, y, z;
+    } doublevec3;
+
+    typedef struct {
+        doublevec3 min;
+        doublevec3 max;
+    } bounds;
+
+]]
+
 ---@class BvhNode
 ---@field bounds { min: vec3, max: vec3 }
 ---@field start number
@@ -20,11 +32,7 @@ local nodes = {}
 --- @param count number
 --- @return number
 function newNode(bounds, start, count)
-    local node = {
-        bounds = bounds,
-        start = start,
-        count = count,
-    }
+    local node = { bounds = bounds, start = start, count = count }
 
     table.insert(nodes, node)
 
@@ -52,45 +60,25 @@ end
 ---@field [12] number
 ---@field [13] number
 
-local boundsMetatable = {}
-
 ---@class bounds
 ---@field min vec3
 ---@field max vec3
-local boundsFunctions = {}
-
-boundsMetatable.__index = boundsFunctions
 
 --- Creates a new bounds object
 --- @param min? vec3
 --- @param max? vec3
 --- @return bounds
 function newBounds(min, max)
-    min = min or vec3(math.huge, math.huge, math.huge)
-    max = max or vec3(-math.huge, -math.huge, -math.huge)
-    return setmetatable({ min = min, max = max }, boundsMetatable)
-end
-
-function boundsFunctions:getSize()
-    return self.max - self.min
-end
-
-local outSize = vec3()
-function boundsFunctions:getSizeTemp()
-    mathv.sub3(self.max, self.min, outSize)
-    return outSize
-end
-
-function boundsFunctions:getCenter()
-    return (self.min + self.max) / 2
+    local minX, minY, minZ = min and min.x or math.huge, min and min.y or math.huge, min and min.z or math.huge
+    local maxX, maxY, maxZ = max and max.x or -math.huge, max and max.y or -math.huge, max and max.z or -math.huge
+    return ffi.new("bounds", { minX, minY, minZ }, { maxX, maxY, maxZ })
 end
 
 do
     local min, max = math.min, math.max
 
-    --- Expands the bounds to include the given triangle
     ---@param triangle triangle
-    function boundsFunctions:include(triangle)
+    function include(self, triangle)
         self.min.x = min(self.min.x, triangle.min.x)
         self.min.y = min(self.min.y, triangle.min.y)
         self.min.z = min(self.min.z, triangle.min.z)
@@ -147,7 +135,7 @@ function newBvhTree(triangles)
     return self
 end
 
-local center = vec3(0, 0, 0)
+local outSize = vec3(0, 0, 0)
 
 --- Builds the BVH tree
 ---@param parentIndex number
@@ -160,8 +148,8 @@ function splitTree(parentIndex, triangles, triGlobalStart, triNum, depth)
 
     local parent = nodes[parentIndex]
 
-    local size = parent.bounds:getSizeTemp()
-    local parentCost = nodeCost(size, triNum);
+    mathv.sub3(parent.bounds.max, parent.bounds.min, outSize)
+    local parentCost = nodeCost(outSize, triNum);
 
     local splitAxis, splitPos, cost = chooseSplit(triangles, parent, triGlobalStart, triNum);
 
@@ -174,14 +162,14 @@ function splitTree(parentIndex, triangles, triGlobalStart, triNum, depth)
             local triangle = triangles[i]
 
             if triangle.center[splitAxis] < splitPos then
-                growToInclude(boundsLeft, triangle)
+                include(boundsLeft, triangle)
 
                 swap = triangles[triGlobalStart + numOnLeft];
                 triangles[triGlobalStart + numOnLeft] = triangle;
                 triangles[i] = swap;
                 numOnLeft = numOnLeft + 1;
             else
-                growToInclude(boundsRight, triangle)
+                include(boundsRight, triangle)
             end
         end
 
@@ -253,8 +241,8 @@ do
     local boundsLeft = newBounds()
     local boundsRight = newBounds()
 
-    local sizeA = vec3()
-    local sizeB = vec3()
+    local sizeA = ffi.new("doublevec3")
+    local sizeB = ffi.new("doublevec3")
 
     --- Evaluate the cost of a split
     ---@param triangles table
@@ -266,20 +254,20 @@ do
         local numOnLeft = 0
         local numOnRight = 0
 
-        boundsLeft.min:set(math.huge, math.huge, math.huge)
-        boundsLeft.max:set(-math.huge, -math.huge, -math.huge)
+        boundsLeft.min.x, boundsLeft.min.y, boundsLeft.min.z = math.huge, math.huge, math.huge
+        boundsLeft.max.x, boundsLeft.max.y, boundsLeft.max.z = -math.huge, -math.huge, -math.huge
 
-        boundsRight.min:set(math.huge, math.huge, math.huge)
-        boundsRight.max:set(-math.huge, -math.huge, -math.huge)
+        boundsRight.min.x, boundsRight.min.y, boundsRight.min.z = math.huge, math.huge, math.huge
+        boundsRight.max.x, boundsRight.max.y, boundsRight.max.z = -math.huge, -math.huge, -math.huge
 
         for i = start, start + count - 1 do
             local tri = triangles[i]
 
             if (tri.center[splitAxis] < splitPos) then
-                boundsLeft:include(tri)
+                include(boundsLeft, tri)
                 numOnLeft = numOnLeft + 1
             else
-                boundsRight:include(tri)
+                include(boundsRight, tri)
                 numOnRight = numOnRight + 1
             end
         end
@@ -301,29 +289,10 @@ function nodeCost(size, numTriangles)
     return halfArea * numTriangles;
 end
 
-do
-    local min, max = math.min, math.max
-
-    --- Grows the bounding box to include the given bounds
-    ---@param bbox bounds
-    ---@param triangle triangle
-    function growToInclude(bbox, triangle)
-        bbox.min.x = min(bbox.min.x, triangle.min.x)
-        bbox.min.y = min(bbox.min.y, triangle.min.y)
-        bbox.min.z = min(bbox.min.z, triangle.min.z)
-
-        bbox.max.x = max(bbox.max.x, triangle.max.x)
-        bbox.max.y = max(bbox.max.y, triangle.max.y)
-        bbox.max.z = max(bbox.max.z, triangle.max.z)
-    end
-end
-
 function sendBVHData()
     BvhBuffer:resize(#nodes)
 
     for i, node in ipairs(nodes) do
-        assert(node.min ~= math.huge, "Node min is infinite")
-        assert(node.max ~= -math.huge, "Node max is negative infinite")
         assert(node.start, "Node triangle start is nil")
         assert(node.count, "Node triangle count is nil")
 
