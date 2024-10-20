@@ -129,15 +129,26 @@ float fastLog(float x)
 float RandomValue(inout uint state) {
     state = state * 747796405u + 2891336453u;
     uint result = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    result = (result >> 22) ^ result;
+    result = (result >> 22u) ^ result;
     return float(result) / 4294967295.0;
 }
 
+float fastSqrt(float x) {
+    return intBitsToFloat(0x1fbd1df5 + (floatBitsToInt(x) >> 1));
+}
+
 const float PI2 = 2.0 * PI;
+const float INV_PI = 1.0 / PI;
+const float INV_PI2 = 1.0 / PI2;
+const float RndToRad = 1.0 / (4294967295.0 * INV_PI2);
 
 float RandomNormalDistributionValue(inout uint state) {
-    float t = PI2 * RandomValue(state);
-    float r = sqrt(-2.0 * log(RandomValue(state)));
+    state = state * 747796405u + 2891336453u;
+    uint result = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    result = (result >> 22u) ^ result;
+    float t = float(result) * RndToRad;
+
+    float r = fastSqrt(-2.0 * fastLog(RandomValue(state)));
     return r * cos(t);
 }
 
@@ -200,9 +211,9 @@ vec3 RayTriangleBVH(Ray ray, out uint closestTriIndex)
 
     closestTriIndex = 0u;
 
-    int max = 1000;
+    int maxIter = 1000;
 
-    while (stackIndex > 0 && max--> 0 && stackIndex < MAX_DEPTH)
+    while (stackIndex > 0 && maxIter--> 0 && stackIndex < MAX_DEPTH)
     {
         BVHNode node = nodes[stack[--stackIndex]];
         bool isLeaf = node.TriangleCount > 0u;
@@ -211,11 +222,31 @@ vec3 RayTriangleBVH(Ray ray, out uint closestTriIndex)
         {
             for (uint i = 0u; i < node.TriangleCount; i++)
             {
-                vec3 distData = rayTriangle(ray, node.TriangleStart + i);
+                // vec3 distData = rayTriangle(ray, node.TriangleStart + i);
 
-                if (distData.x > 0.0 && distData.x < closestDistData.x)
+                ////////////////////// ray-triangle intersection //////////////////////
+                PackedTriangle triangle = triangles[node.TriangleStart + i];
+
+                vec3 A = vec3(triangle.data0, triangle.data1, triangle.data2);
+                vec3 AB = vec3(triangle.data3, triangle.data4, triangle.data5) - A;
+                vec3 AC = vec3(triangle.data6, triangle.data7, triangle.data8) - A;
+                vec3 normal = cross(AB, AC);
+                vec3 AO = ray.origin - A;
+                vec3 DAO = cross(AO, ray.direction);
+
+                float det = -dot(ray.direction, normal);
+                float invDet = 1.0 / det;
+
+                float dist = dot(AO, normal) * invDet;
+                float u = dot(AC, DAO) * invDet;
+                float v = -dot(AB, DAO) * invDet;
+                float w = 1.0 - u - v;
+
+                bool hit = dist >= 0.0 && u >= 0.0 && v >= 0.0 && w >= 0.0;
+                
+                if (hit && dist < closestDistData.x)
                 {
-                    closestDistData = distData;
+                    closestDistData = vec3(dist, u, v);
                     closestTriIndex = node.TriangleStart + i;
                 }
             }
@@ -225,10 +256,35 @@ vec3 RayTriangleBVH(Ray ray, out uint closestTriIndex)
             uint childIndexA = node.TriangleStart;
             uint childIndexB = node.TriangleStart + 1u;
             BVHNode childA = nodes[childIndexA];
-            float dstA = rayBoxDistance(childA.Min, childA.Max, ray);
+
+            ////////////////////// ray-box intersection //////////////////////
+            vec3 tMinA = (childA.Min - ray.origin) * ray.invDirection;
+            vec3 tMaxA = (childA.Max - ray.origin) * ray.invDirection;
+
+            vec3 t1A = min(tMinA, tMaxA);
+            float tNearA = max(max(t1A.x, t1A.y), t1A.z);
+
+            vec3 t2A = max(tMinA, tMaxA);
+            float tFarA = min(min(t2A.x, t2A.y), t2A.z);
+
+            float dstA = max(mix(1E7, tNearA, tFarA >= tNearA && tFarA > 0.0), 0.0);
+
+            // float dstA = rayBoxDistance(childA.Min, childA.Max, ray);
 
             BVHNode childB = nodes[childIndexB];
-            float dstB = rayBoxDistance(childB.Min, childB.Max, ray);
+
+            ////////////////////// ray-box intersection //////////////////////
+            vec3 tMinB = (childB.Min - ray.origin) * ray.invDirection;
+            vec3 tMaxB = (childB.Max - ray.origin) * ray.invDirection;
+
+            vec3 t1B = min(tMinB, tMaxB);
+            float tNearB = max(max(t1B.x, t1B.y), t1B.z);
+
+            vec3 t2B = max(tMinB, tMaxB);
+            float tFarB = min(min(t2B.x, t2B.y), t2B.z);
+
+            float dstB = max(mix(1E7, tNearB, tFarB >= tNearB && tFarB > 0.0), 0.0);
+            // float dstB = rayBoxDistance(childB.Min, childB.Max, ray);
             
             // We want to look at closest child node first, so push it last
             bool isNearestA = dstA <= dstB;
@@ -241,14 +297,6 @@ vec3 RayTriangleBVH(Ray ray, out uint closestTriIndex)
             if (dstNear < closestDistData.x) stack[stackIndex++] = childIndexNear;
         }
     }
-
-    return closestDistData;
-}
-
-vec3 checkRayIntersections(Ray ray, out uint closestTriIndex)
-{
-    // this function will be filled in later once i have separate models
-    vec3 closestDistData = RayTriangleBVH(ray, closestTriIndex);
 
     return closestDistData;
 }
@@ -274,7 +322,7 @@ void traceRay(inout RayInfo ray, inout uint state) {
 
     Ray rayData = Ray(ray.origin, ray.direction, 1.0 / ray.direction);
 
-    vec3 distData = checkRayIntersections(rayData, triangleIndex);
+    vec3 distData = RayTriangleBVH(rayData, triangleIndex);
 
     if (distData.x >= 1E6) {
         ray.incomingLight += ray.color * sampleSkybox(rayData);
