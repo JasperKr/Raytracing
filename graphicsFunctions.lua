@@ -1,3 +1,36 @@
+local bit = require("bit")
+
+local mAdd = (bit.lshift(1, 10) - 1) / 2
+function Rhodium.internal.encodeVertexNormal(x, y, z)
+    return bit.lshift(x * mAdd + mAdd, 20) + bit.lshift(y * mAdd + mAdd, 10) + z * mAdd + mAdd
+end
+
+local mult = bit.lshift(1, 10) - 1
+function Rhodium.internal.encodeUnormVec3Int32(x, y, z)
+    return bit.lshift(x * mult, 20) + bit.lshift(y * mult, 10) + z * mult
+end
+
+function Rhodium.internal.encodeUnormInt8(x)
+    return math.floor(x * 255)
+end
+
+function Rhodium.internal.encodeVertexTangent(x, y, z, w)
+    return
+        bit.lshift(x * mAdd + mAdd, 20) +
+        bit.lshift(y * mAdd + mAdd, 10) +
+        z * mAdd + mAdd +
+        bit.lshift((w or 1) < 0 and 0 or 1, 31)
+end
+
+function Rhodium.internal.encodeVertexTexCoord(u, v)
+    local EncU = Rhodium.math.float32to16uint32(u)
+    local EncV = Rhodium.math.float32to16uint32(v)
+
+    local encodedUV = bit.lshift(EncV, 16) + EncU
+
+    return tonumber(encodedUV)
+end
+
 ---@param vec vec3
 function Rhodium.graphics.setCameraPosition(vec)
     Rhodium.internal.graphicsData.cameraPosition:set(vec.x, vec.y, vec.z)

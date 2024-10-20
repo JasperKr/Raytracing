@@ -2,6 +2,8 @@
 
 layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
+#extension GL_NV_ray_tracing : require 
+
 #define SKIP_VIEW_Z 1
 #define SKIP_GET_POSITION_DATA 1
 
@@ -21,20 +23,9 @@ struct TextureInfo {
 };
 
 struct Material {
-    vec3 albedo;
-    vec3 emissive;
-    float perceptualRoughness;
-    float metallic;
-    int albedoIndex;
-    int emissiveIndex;
-    int normalIndex;
-    int materialIndex;
-};
-
-struct Triangle {
-    vec3 A; // Position
-    vec3 B; // Position
-    vec3 C; // Position
+    ivec2 albedo; // albedo, dummy
+    ivec2 material;
+    ivec2 materialIndices;
 };
 
 struct PackedTriangle {
@@ -52,18 +43,10 @@ struct PackedTriangle {
 };
 
 struct TriangleData {
-    vec2 UV_A;
-    vec2 UV_B;
-    vec2 UV_C;
+    uvec3 UVs;
     uint material;
-    vec3 normal_A;
-    vec3 normal_B;
-    vec3 normal_C;
-};
-
-struct PackedTriangleData {
-    float[15] data;
-    uint material;
+    ivec3 normals;
+    uint padding;
 };
 
 struct BVHNode {
@@ -182,37 +165,6 @@ float rayBoxDistance(vec3 bmin, vec3 bmax, Ray ray) {
     return max(mix(1E7, tNear, tFar >= tNear && tFar > 0.0), 0.0);
 }
 
-vec3[3] getMaterialData(uint materialIndex, vec2 uv)
-{
-    Material material = materials[materialIndex];
-
-    vec3 albedo = material.albedo;
-    if (material.albedoIndex >= 0)
-    {
-        vec2 scale = albedoScales[material.albedoIndex].scale;
-        albedo = texture(AlbedoTexture, vec3(uv * scale, material.albedoIndex)).rgb;
-    }
-    
-    vec3 emissive = material.emissive;
-    if (material.emissiveIndex >= 0)
-    {
-        vec2 scale = emissiveScales[material.emissiveIndex].scale;
-        emissive *= texture(EmissiveTexture, vec3(uv * scale, material.emissiveIndex)).rgb;
-    }
-    
-    float perceptualRoughness = material.perceptualRoughness;
-    float metallic = material.metallic;
-    if (material.materialIndex >= 0)
-    {
-        vec2 scale = metallicRoughnessScales[material.materialIndex].scale;
-        vec2 data = texture(MetallicRoughnessTexture, vec3(uv * scale, material.materialIndex)).gb;
-        perceptualRoughness = max(MIN_PERCEPTUAL_ROUGHNESS, data.x);
-        metallic = data.y;
-    }
-
-    return vec3[3](albedo, emissive, vec3(perceptualRoughness, metallic, 0.0));
-}
-
 vec3 rayTriangle(Ray ray, uint triIndex) {
     PackedTriangle triangle = triangles[triIndex];
 
@@ -305,11 +257,11 @@ uniform mediump samplerCube Skybox;
 uniform highp vec3 CameraPosition;
 uniform highp mat4 InverseViewProjectionMatrix;
 
-const float skyboxBrightness = 1.0;
+uniform float SkyboxBrightness;
 
 vec3 sampleSkybox(Ray ray)
 {
-    return texture(Skybox, ray.direction).rgb * skyboxBrightness;
+    return texture(Skybox, ray.direction).rgb * SkyboxBrightness;
 }
 
 const float GlobalFogDensity = 0.0;
@@ -351,33 +303,36 @@ void traceRay(inout RayInfo ray, inout uint state) {
     TriangleData triangle = triangleDatas[triangleIndex];
     uint materialIndex = triangle.material;
 
-    vec3 normal = triangle.normal_A * w + triangle.normal_B * u + triangle.normal_C * v;
-    vec2 uv = w * triangle.UV_A + u * triangle.UV_B + v * triangle.UV_C;
+    vec3 normal = UnpackNormalInt32(triangle.normals.x) * w + UnpackNormalInt32(triangle.normals.y) * u + UnpackNormalInt32(triangle.normals.z) * v;
+    vec2 uv = w * unpackHalf2x16(triangle.UVs.x) + u * unpackHalf2x16(triangle.UVs.y) + v * unpackHalf2x16(triangle.UVs.z);
 
     // Material data
 
     Material material = materials[materialIndex];
 
-    vec3 albedo = material.albedo;
-    if (material.albedoIndex >= 0)
+    ivec4 indices = UnpackInt16Vec4Int32vec2(material.materialIndices);
+
+    vec3 albedo = UnpackUnormVec3Int32(material.albedo.x);
+    if (indices.x >= 0)
     {
-        vec2 scale = albedoScales[material.albedoIndex].scale;
-        albedo = texture(AlbedoTexture, vec3(uv * scale, material.albedoIndex)).rgb;
+        vec2 scale = albedoScales[indices.x].scale;
+        albedo = texture(AlbedoTexture, vec3(uv * scale, indices.x)).rgb;
     }
     
-    vec3 emissive = material.emissive;
-    if (material.emissiveIndex >= 0)
+    vec3 emissive = vec3(unpackHalf2x16(material.material.x), unpackHalf2x16(material.material.y).x);
+    if (indices.y >= 0)
     {
-        vec2 scale = emissiveScales[material.emissiveIndex].scale;
-        emissive *= texture(EmissiveTexture, vec3(uv * scale, material.emissiveIndex)).rgb;
+        vec2 scale = emissiveScales[indices.y].scale;
+        emissive *= texture(EmissiveTexture, vec3(uv * scale, indices.y)).rgb;
     }
-    
-    float perceptualRoughness = material.perceptualRoughness;
-    float metallic = material.metallic;
-    if (material.materialIndex >= 0)
+
+    // material.material.y: 16emmisive.b, 8roughness unorm8, 8metallic unorm8
+    float perceptualRoughness = (material.material.y >> 16) & 0xFF;
+    float metallic = (material.material.y >> 24) & 0xFF;
+    if (indices.w >= 0)
     {
-        vec2 scale = metallicRoughnessScales[material.materialIndex].scale;
-        vec2 data = texture(MetallicRoughnessTexture, vec3(uv * scale, material.materialIndex)).gb;
+        vec2 scale = metallicRoughnessScales[indices.w].scale;
+        vec2 data = texture(MetallicRoughnessTexture, vec3(uv * scale, indices.w)).gb;
         perceptualRoughness = max(MIN_PERCEPTUAL_ROUGHNESS, data.x);
         metallic = data.y;
     }
@@ -411,10 +366,10 @@ void computemain() {
 
     RayInfo rayInfo = rayInfos[pixelIndex];
 
-    if (max(max(rayInfo.color.r, rayInfo.color.g), rayInfo.color.b) < 0.01)
-    {
-        return;
-    }
+    // if (max(max(rayInfo.color.r, rayInfo.color.g), rayInfo.color.b) < 0.001)
+    // {
+    //     return;
+    // }
 
     traceRay(rayInfo, rngState);
 

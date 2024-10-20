@@ -141,6 +141,38 @@ vec3 getViewPosition(in vec2 uv, in float depth, mat4 inverseProjectionMatrix) {
 
 #endif
 
+ivec4 UnpackInt16Vec4Int32vec2(ivec2 data) {
+    return ivec4(
+        data.x & 0xFFFF,
+        data.x >> 16,
+        data.y & 0xFFFF,
+        data.y >> 16
+    );
+}
+
+vec3 UnpackUnormVec3Int32(int data) {
+    return vec3(
+        float((data >> 20) & 0x3FF) / 1023.0,
+        float((data >> 10) & 0x3FF) / 1023.0,
+        float(data & 0x3FF) / 1023.0
+    );
+}
+
+vec4 UnpackTangentInt32(int data) {
+    return vec4(
+        normalize(UnpackUnormVec3Int32(data) * 2.0 - 1.0),
+        float((data >> 31) & 1) * 2.0 - 1.0
+    );
+}
+
+vec3 UnpackNormalInt32(int data) {
+    return normalize(UnpackUnormVec3Int32(data) * 2.0 - 1.0);
+}
+
+int PackUnormVec3Int32(vec3 data) {
+    return int(data.r * 1023.0) << 20 | int(data.g * 1023.0) << 10 | int(data.b * 1023.0);
+}
+
 mediump float packToInt8Unorm(bool[8] data) {
     int result = 0;
     for (int i = 0; i < 8; i++) {

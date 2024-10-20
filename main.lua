@@ -65,19 +65,15 @@ function love.load()
         { format = "rgba32f", computewrite = true, canvas = true })
 
     local materialformat = {
-        { name = "albedo",              format = "floatvec3" },
-        { name = "emissve",             format = "floatvec3" },
-        { name = "perceptualRoughness", format = "float" },
-        { name = "metallic",            format = "float" },
-        { name = "albedoIndex",         format = "int32" },
-        { name = "emissiveIndex",       format = "int32" },
-        { name = "normalIndex",         format = "int32" },
-        { name = "materialIndex",       format = "int32" },
+        { name = "albedo",          format = "int32vec2" }, -- 10r, 10g, 10b, dummy
+        { name = "material",        format = "int32vec2" }, --16r, 16g, 16b, 8roughness, 8metallic
+        { name = "materialIndices", format = "int32vec2" }, -- 16 albedo, 16 emissive, 16 normal, 16 material
     }
 
     print("Loading meshes...")
 
-    -- local meshes = Rhodium.graphics.loadGltfFile("Sponza/sponza.gltf")
+    -- local meshes = Rhodium.graphics.loadGltfFile("Tree/jacaranda_tree_2k.gltf")
+    -- local meshes = Rhodium.graphics.loadGltfFile("car.glb")
     local meshes = Rhodium.graphics.loadGltfFile("sponza_with_light.glb")
     -- local meshes = Rhodium.graphics.loadGltfFile("sponza.glb")
 
@@ -175,7 +171,29 @@ function love.load()
 
     print("Preparing materials...")
 
-    local materialsBuffer = newBuffer(materialformat, #meshes, { shaderstorage = true })
+    local function encodeMaterial(albedo, emissive, roughness, metallic, albedoIndex, emissiveIndex, nomralIndex,
+                                  materialIndex)
+        local encAlbedo = Rhodium.internal.encodeUnormVec3Int32(albedo[1], albedo[2], albedo[3])
+        local encEmissiveX = Rhodium.math.float32to16uint32(emissive[1])
+        local encEmissiveY = Rhodium.math.float32to16uint32(emissive[2])
+        local encEmissiveZ = Rhodium.math.float32to16uint32(emissive[3])
+
+        local encEmissiveA = tonumber(encEmissiveX + bit.lshift(encEmissiveY, 16))
+        local encEmissiveB = tonumber(encEmissiveZ + bit.lshift(roughness * 255, 16) + bit.lshift(metallic * 255, 24))
+
+        local function clamp16(x)
+            return math.min(math.max(x, 0), 65535)
+        end
+
+        local matA = clamp16(albedoIndex) + bit.lshift(clamp16(emissiveIndex), 16)
+        local matB = clamp16(nomralIndex) + bit.lshift(clamp16(materialIndex), 16)
+
+        return encAlbedo, 0, encEmissiveA, encEmissiveB, matA, matB
+    end
+
+    local materialsBuffer = newBuffer(materialformat, #meshes, { vertex = true, shaderstorage = true })
+
+    print(materialsBuffer:getBuffer():getElementStride()) --> 24
 
     for i = 1, #meshes do
         local mesh = meshes[i]
@@ -211,16 +229,18 @@ function love.load()
             table.insert(metallicRoughnessTextures, mesh.material.uniforms.metallicRoughnessTexture)
         end
 
-        materialsBuffer:write({
-            { uniforms.baseColor[1],      uniforms.baseColor[2],      uniforms.baseColor[3] },
-            { uniforms.emissiveFactor[1], uniforms.emissiveFactor[2], uniforms.emissiveFactor[3] },
-            uniforms.roughness or 0.5,
-            uniforms.metalness or 0.5,
-            albedoIndex,
-            emissiveIndex,
-            normalIndex,
-            materialIndex,
-        })
+        materialsBuffer:writeMany(
+            encodeMaterial(
+                { uniforms.baseColor[1], uniforms.baseColor[2], uniforms.baseColor[3] },
+                { uniforms.emissiveFactor[1], uniforms.emissiveFactor[2], uniforms.emissiveFactor[3] },
+                uniforms.roughness or 0.5,
+                uniforms.metalness or 0.5,
+                albedoIndex,
+                emissiveIndex,
+                normalIndex,
+                materialIndex
+            )
+        )
     end
 
     local albedoTexture, albedoBuffer
@@ -260,31 +280,27 @@ function love.load()
 
     print("Uploading data to GPU... Done! Took " .. love.timer.getTime() - t .. " seconds")
 
-    local trianglePositionFormat = {
-        -- { name = "posA", format = "floatvec3" },
-        -- { name = "posB", format = "floatvec3" },
-        -- { name = "posC", format = "floatvec3" },
-    }
+    local trianglePositionFormat = {}
 
     for i = 1, 9 do table.insert(trianglePositionFormat, { name = "pos" .. i, format = "float" }) end
 
     local triangleDataFormat = {
-        { name = "UV_A",          format = "floatvec2" },
-        { name = "UV_B",          format = "floatvec2" },
-        { name = "UV_C",          format = "floatvec2" },
+        { name = "UVs",           format = "uint32vec3" },
         { name = "materialIndex", format = "uint32" },
-        { name = "normalA",       format = "floatvec3" },
-        { name = "normalB",       format = "floatvec3" },
-        { name = "normalC",       format = "floatvec3" },
+        { name = "normals",       format = "int32vec3" },
+        { name = "padding",       format = "int32" },
     }
 
     print("Preparing triangle data buffers...")
 
     local trianglePositionBuffer = newBuffer(
-        trianglePositionFormat, triangleCount, { shaderstorage = true, usage = "static" })
+        trianglePositionFormat, triangleCount, { vertex = true, shaderstorage = true, usage = "static" })
 
     local triangleDataBuffer = newBuffer(
-        triangleDataFormat, triangleCount, { shaderstorage = true, usage = "static" })
+        triangleDataFormat, triangleCount, { vertex = true, shaderstorage = true, usage = "static" })
+
+    print(trianglePositionBuffer:getBuffer():getElementStride())
+    print(triangleDataBuffer:getBuffer():getElementStride())
 
     for i = 1, triangleCount do
         local triangle = triangles[i]
@@ -296,15 +312,17 @@ function love.load()
         )
 
         triangleDataBuffer:writeMany(
-            triangle[11], triangle[12],
-            triangle[13], triangle[14],
-            triangle[15], triangle[16],
+            Rhodium.internal.encodeVertexTexCoord(triangle[11], triangle[12]),
+            Rhodium.internal.encodeVertexTexCoord(triangle[13], triangle[14]),
+            Rhodium.internal.encodeVertexTexCoord(triangle[15], triangle[16]),
 
             triangle[10],
 
-            triangle[17], triangle[18], triangle[19],
-            triangle[20], triangle[21], triangle[22],
-            triangle[23], triangle[24], triangle[25]
+            Rhodium.internal.encodeVertexNormal(triangle[17], triangle[18], triangle[19]),
+            Rhodium.internal.encodeVertexNormal(triangle[20], triangle[21], triangle[22]),
+            Rhodium.internal.encodeVertexNormal(triangle[23], triangle[24], triangle[25]),
+
+            0
         )
     end
 
@@ -346,6 +364,8 @@ function love.load()
 
     print("Done!")
 end
+
+SkyboxBrightness = 1.0
 
 function rotatePositionSeparate(x, y, z, qx, qy, qz, qw)
     local cx = qy * z - qz * y + x * qw
@@ -533,6 +553,7 @@ end
 function trace()
     local sx, sy, sz = Shaders.rayTrace:getLocalThreadgroupSize()
 
+    Shaders.rayTrace:send("SkyboxBrightness", SkyboxBrightness)
     Shaders.rayTrace:send("RandomIndex", love.math.random(0, 2 ^ 32 - 1))
 
     local iW, iH = love.graphics.getDimensions()
@@ -543,10 +564,13 @@ function trace()
     end
 end
 
+Exposure = 1.0
+
 function write()
     local sx, sy, sz = Shaders.rayWrite:getLocalThreadgroupSize()
     Shaders.rayWrite:send("FrameIndex", Frame)
     Shaders.rayWrite:send("ScreenSize", { love.graphics.getDimensions() })
+    Shaders.rayWrite:send("Exposure", Exposure)
 
     local iW, iH = love.graphics.getDimensions()
     local x, y = math.ceil(iW / sx), math.ceil(iH / sy)
@@ -590,6 +614,8 @@ function love.draw()
     love.graphics.print("Debug mode: " .. tostring(DebugMode) .. "(" .. modeString .. ")", 10, 70)
     love.graphics.print("Frame: " .. tostring(Frame), 10, 90)
     love.graphics.print("Max bounces: " .. tostring(MAX_BOUNCES), 10, 110)
+    love.graphics.print("Skybox brightness: " .. tostring(SkyboxBrightness), 10, 130)
+    love.graphics.print("Exposure: " .. tostring(Exposure), 10, 150)
 end
 
 function love.mousemoved(x, y, dx, dy)
@@ -620,5 +646,21 @@ function love.keypressed(key)
 
     if key == "e" then
         MAX_BOUNCES = MAX_BOUNCES + 1
+    end
+
+    if key == "t" then
+        SkyboxBrightness = math.max(SkyboxBrightness + 1.0, SkyboxBrightness * 1.2)
+    end
+
+    if key == "r" then
+        SkyboxBrightness = math.min(SkyboxBrightness - 1.0, SkyboxBrightness * 0.8)
+    end
+
+    if key == "y" then
+        Exposure = Exposure + 0.1
+    end
+
+    if key == "u" then
+        Exposure = Exposure - 0.1
     end
 end

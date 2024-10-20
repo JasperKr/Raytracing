@@ -18,6 +18,132 @@ function Rhodium.math.saturate(x)
     return math.min(math.max(x, 0.0), 1.0)
 end
 
+local function convertMantissa(i)
+    local m = bit.lshift(i, 13)                 -- Zero pad mantissa bits
+    local e = ffi.new("uint32_t", 0)            -- Zero exponent
+
+    while (not bit.band(m, 0x00800000)) do      -- While not normalized
+        e = e - ffi.new("uint32_t", 0x00800000) -- Decrement exponent (1<<23)
+        m = bit.lshift(m, 1)                    -- Shift mantissa
+    end
+
+    m = bit.band(m, bit.bnot(0x00800000))   -- Clear leading 1 bit
+    e = e + ffi.new("uint32_t", 0x38800000) -- Adjust bias ((127-14)<<23)
+
+    return bit.bor(m, e)                    -- Return combined number
+end
+
+local mantissatable = ffi.new("uint32_t[2048]");
+local offsettable = ffi.new("uint16_t[64]");
+local exponenttable = ffi.new("uint32_t[64]");
+
+-- tables for float -> half conversions
+local basetable = ffi.new("uint16_t[512]");
+local shifttable = ffi.new("uint8_t[512]");
+
+do
+    -- tables for float16 -> float32 conversions.
+
+    mantissatable[0] = 0
+
+    for i = 1, 1024 - 1 do
+        mantissatable[i] = convertMantissa(i)
+    end
+
+    for i = 1024, 2048 - 1 do
+        mantissatable[i] = 0x38000000 + bit.lshift((i - 1024), 13)
+    end
+
+    exponenttable[0] = 0
+    exponenttable[32] = 0x80000000
+
+    for i = 0, 31 - 1 do
+        exponenttable[i] = bit.lshift(i, 23)
+    end
+
+    for i = 33, 63 - 1 do
+        exponenttable[i] = 0x80000000 + bit.lshift((i - 32), 23)
+    end
+
+    exponenttable[31] = 0x47800000
+    exponenttable[63] = 0xC7800000
+
+    for i = 0, 64 - 1 do
+        if (i == 0 or i == 32) then
+            offsettable[i] = 0
+        else
+            offsettable[i] = 1024
+        end
+    end
+
+
+    -- tables for float32 -> float16 conversions.
+
+    for i = 0, 256 - 1 do
+        local e = i - 127
+
+        if (e < -24) then -- Very small numbers map to zero
+            basetable[bit.bor(i, 0x000)] = 0x0000
+            basetable[bit.bor(i, 0x100)] = 0x8000
+            shifttable[bit.bor(i, 0x000)] = 24
+            shifttable[bit.bor(i, 0x100)] = 24
+        elseif e < -14 then -- Small numbers map to denorms
+            basetable[bit.bor(i, 0x000)] = bit.rshift(0x0400, (-e - 14))
+            basetable[bit.bor(i, 0x100)] = bit.bor(bit.rshift(0x0400, (-e - 14)), 0x8000)
+            shifttable[bit.bor(i, 0x000)] = -e - 1
+            shifttable[bit.bor(i, 0x100)] = -e - 1
+        elseif e <= 15 then -- Normal numbers just lose precision
+            basetable[bit.bor(i, 0x000)] = bit.lshift((e + 15), 10)
+            basetable[bit.bor(i, 0x100)] = bit.bor(bit.lshift((e + 15), 10), 0x8000)
+            shifttable[bit.bor(i, 0x000)] = 13
+            shifttable[bit.bor(i, 0x100)] = 13
+        elseif e < 128 then -- Large numbers map to Infinity
+            basetable[bit.bor(i, 0x000)] = 0x7C00
+            basetable[bit.bor(i, 0x100)] = 0xFC00
+            shifttable[bit.bor(i, 0x000)] = 24
+            shifttable[bit.bor(i, 0x100)] = 24
+        else -- Infinity and NaN's stay Infinity and NaN's
+            basetable[bit.bor(i, 0x000)] = 0x7C00
+            basetable[bit.bor(i, 0x100)] = 0xFC00
+            shifttable[bit.bor(i, 0x000)] = 13
+            shifttable[bit.bor(i, 0x100)] = 13
+        end
+    end
+end
+
+do
+    local tempFloat = ffi.new("float[1]")
+    local tempUInt = ffi.new("uint32_t[1]")
+    local tempUint16 = ffi.new("uint16_t[1]")
+
+    --https://github.com/love2d/love/blob/1ecc8a1fd9ae8327525bafcbceeb48cdc9bf4fd1/src/common/floattypes.cpp#L162
+    function Rhodium.math.float32to16(f)
+        tempFloat[0] = f
+        f = ffi.cast("float*", tempFloat[0])
+        tempUInt[0] = ffi.cast("uint32_t", ffi.cast("uint32_t*", f))
+        tempUint16[0] = basetable[bit.band(bit.rshift(tempUInt[0], 23), 0x1FF)] +
+            bit.rshift(bit.band(tempUInt[0], 0x007FFFFF), shifttable[bit.band(bit.rshift(tempUInt[0], 23), 0x1FF)])
+
+        return tempUint16[0]
+    end
+end
+
+do
+    local float32 = ffi.new("float[1]")
+    local scratch_0 = ffi.new("uint32_t", 0x007FFFFF)
+    local scratch_1 = ffi.new("uint32_t", 23)
+    local scratch_2 = ffi.new("uint32_t", 0x1FF)
+
+    --https://github.com/love2d/love/blob/1ecc8a1fd9ae8327525bafcbceeb48cdc9bf4fd1/src/common/floattypes.cpp#L162
+    function Rhodium.math.float32to16uint32(f)
+        float32[0] = f
+        local data = ffi.cast("uint32_t *", float32)
+        local index = bit.band(bit.rshift(data[0], scratch_1), scratch_2)
+
+        return basetable[index] + bit.rshift(bit.band(data[0], scratch_0), shifttable[index])
+    end
+end
+
 ---@alias Rhodium.meshMaterial {normalMap:love.Texture,albedoMap:love.Texture,roughnessMap:love.Texture,metallicMap:love.Texture,environmentMap:love.Texture,meshCullMode:love.CullMode,meshes:table}
 
 --- creates vertices for a box
