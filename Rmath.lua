@@ -1,8 +1,7 @@
-PI2 = math.pi * 2
-IPI2 = 1 / PI2
-IPI = 1 / math.pi
-PI05 = math.pi * 0.5
-IPI05 = 1 / PI05
+Rhodium.math.PI2 = math.pi * 2
+Rhodium.math.PI05 = math.pi * 0.5
+
+local ffi = require("ffi")
 
 function Rhodium.math.clamp(v, min, max)
     return math.min(math.max(v, min), max)
@@ -39,7 +38,9 @@ local exponenttable = ffi.new("uint32_t[64]");
 
 -- tables for float -> half conversions
 local basetable = ffi.new("uint16_t[512]");
+local basetable32 = ffi.new("uint32_t[512]");
 local shifttable = ffi.new("uint8_t[512]");
+local shifttable32 = ffi.new("uint32_t[512]");
 
 do
     -- tables for float16 -> float32 conversions.
@@ -109,6 +110,11 @@ do
             shifttable[bit.bor(i, 0x100)] = 13
         end
     end
+
+    for i = 0, 512 - 1 do
+        basetable32[i] = basetable[i]
+        shifttable32[i] = shifttable[i]
+    end
 end
 
 do
@@ -130,91 +136,27 @@ end
 
 do
     local float32 = ffi.new("float[1]")
-    local scratch_0 = ffi.new("uint32_t", 0x007FFFFF)
-    local scratch_1 = ffi.new("uint32_t", 23)
-    local scratch_2 = ffi.new("uint32_t", 0x1FF)
 
     --https://github.com/love2d/love/blob/1ecc8a1fd9ae8327525bafcbceeb48cdc9bf4fd1/src/common/floattypes.cpp#L162
     function Rhodium.math.float32to16uint32(f)
-        float32[0] = f
+        local floatPtr = ffi.cast("float*", float32)
+        floatPtr[0] = f
         local data = ffi.cast("uint32_t *", float32)
-        local index = bit.band(bit.rshift(data[0], scratch_1), scratch_2)
-
-        return basetable[index] + bit.rshift(bit.band(data[0], scratch_0), shifttable[index])
+        local index = bit.band(bit.rshift(data[0], 23), 0x1FF)
+        return basetable32[index] + bit.rshift(bit.band(data[0], 0x007FFFFF), shifttable32[index])
     end
 end
 
----@alias Rhodium.meshMaterial {normalMap:love.Texture,albedoMap:love.Texture,roughnessMap:love.Texture,metallicMap:love.Texture,environmentMap:love.Texture,meshCullMode:love.CullMode,meshes:table}
-
---- creates vertices for a box
----@param w number
----@param h number
----@param d number
----@param x? number
----@param y? number
----@param z? number
----@return table
-function Rhodium.internal.boxVerticesFromSize(w, h, d, x, y, z, vertices, createUvs, createNormals)
-    x = x or 0
-    y = y or 0
-    z = z or 0
-    local verts = {
-        { 1,  1,  -1 },
-        { 1,  -1, -1 },
-        { 1,  1,  1 },
-        { 1,  -1, 1 },
-        { -1, 1,  -1 },
-        { -1, -1, -1 },
-        { -1, 1,  1 },
-        { -1, -1, 1 } }
-    local texCoords = {
-        { 0.625, 0.5 },
-        { 0.375, 0.5 },
-        { 0.625, 0.75 },
-        { 0.375, 0.75 },
-        { 0.875, 0.5 },
-        { 0.625, 0.25 },
-        { 0.125, 0.5 },
-        { 0.375, 0.25 },
-        { 0.875, 0.75 },
-        { 0.625, 1 },
-        { 0.625, 0 },
-        { 0.375, 0 },
-        { 0.375, 1 },
-        { 0.125, 0.75 } }
-
-    local triangles = {
-        { { 5, 5, 1 },  { 3, 3, 1 },  { 1, 1, 1 } },
-        { { 3, 3, 2 },  { 8, 13, 2 }, { 4, 4, 2 } },
-        { { 7, 11, 3 }, { 6, 8, 3 },  { 8, 12, 3 } },
-        { { 2, 2, 4 },  { 8, 14, 4 }, { 6, 7, 4 } },
-        { { 1, 1, 5 },  { 4, 4, 5 },  { 2, 2, 5 } },
-        { { 5, 6, 6 },  { 2, 2, 6 },  { 6, 8, 6 } },
-        { { 5, 5, 1 },  { 7, 9, 1 },  { 3, 3, 1 } },
-        { { 3, 3, 2 },  { 7, 10, 2 }, { 8, 13, 2 } },
-        { { 7, 11, 3 }, { 5, 6, 3 },  { 6, 8, 3 } },
-        { { 2, 2, 4 },  { 4, 4, 4 },  { 8, 14, 4 } },
-        { { 1, 1, 5 },  { 3, 3, 5 },  { 4, 4, 5 } },
-        { { 5, 6, 6 },  { 1, 1, 6 },  { 2, 2, 6 } },
-    }
-
-    local vertices = vertices or {}
-    for i, v in ipairs(triangles) do
-        for j = 1, 3 do
-            local vert = v[j]
-            local pos = verts[vert[1]]
-            local tx = texCoords[vert[2]]
-            table.insert(vertices,
-                { pos[1] * w * 0.5 + x, pos[2] * h * 0.5 + y, pos[3] * d * 0.5 + z, tx[1], tx[2], 0, 1, 0 })
-        end
-    end
-    return vertices
+function Rhodium.internal.aabb(aMinX, aMinY, aMinZ, aMaxX, aMaxY, aMaxZ, bMinX, bMinY, bMinZ, bMaxX, bMaxY, bMaxZ)
+    local x_condition = (aMinX - bMaxX) * (bMinX - aMaxX)
+    local y_condition = (aMaxY - bMinY) * (bMaxY - aMinY)
+    local z_condition = (aMaxZ - bMinZ) * (bMaxZ - aMinZ)
+    return math.min(x_condition, y_condition, z_condition) > 0
 end
 
-function Rhodium.math.AABB(b1, b2)
-    local v, w = b1:getBoundingBox(), b2:getBoundingBox()
-    return v[1] + v[4] > w[1] and v[2] + v[5] > w[2] and v[1] < w[1] + w[4] and v[2] < w[2] + w[5] and
-        v[3] + v[6] > w[3] and v[3] < w[3] + w[6]
+function Rhodium.math.encodeUnorm4x8(x, y, z, w)
+    return bit.bor(bit.lshift(math.floor(x * 255.0 + 0.5), 0), bit.lshift(math.floor(y * 255.0 + 0.5), 8),
+        bit.lshift(math.floor(z * 255.0 + 0.5), 16), bit.lshift(math.floor(w * 255.0 + 0.5), 24))
 end
 
 local function printTableInternal(t, floor, names, loopedTables)
@@ -253,21 +195,31 @@ local function printTableInternal(t, floor, names, loopedTables)
     io.write(("  "):rep(#names) .. "}\n")
 end
 
+local function toTableVal(x)
+    if type(x) == "string" then
+        return "\"" .. x .. "\""
+    else
+        return tostring(x)
+    end
+end
+
 local function TableToStringInternal(t, finalString, names, loopedTables)
-    finalString = finalString .. ("  "):rep(#names) .. (names[#names] and names[#names] .. ": " or "") .. "{\n"
+    finalString = finalString ..
+        ("  "):rep(#names) .. (names[#names] and "[" .. toTableVal(names[#names]) .. "] = " or "") .. "{\n"
     for i, v in pairs(t) do
         if type(v) == "table" then
             if loopedTables[v] then
                 finalString = finalString ..
-                    ("  "):rep(#names + 1) .. tostring(i) .. " = Reference to " .. loopedTables[v] .. "\n"
+                    ("  "):rep(#names + 1) .. "[" .. toTableVal(i) .. "] = \"Reference to " .. loopedTables[v] .. "\"\n"
                 goto continue
             end
             if v == t or v == _G then
-                finalString = finalString .. ("  "):rep(#names + 1) .. tostring(i) .. " = Reference to self\n"
+                finalString = finalString ..
+                    ("  "):rep(#names + 1) .. "[" .. toTableVal(i) .. "] = \"Reference to self\"\n"
                 goto continue
             end
             if not next(v) then
-                finalString = finalString .. ("  "):rep(#names + 1) .. tostring(i) .. " = {}\n"
+                finalString = finalString .. ("  "):rep(#names + 1) .. "[" .. toTableVal(i) .. "] = {}\n"
                 goto continue
             end
             table.insert(names, i)
@@ -276,9 +228,12 @@ local function TableToStringInternal(t, finalString, names, loopedTables)
             table.remove(names, #names)
         else
             if type(v) == "userdata" or type(v) == "function" or type(v) == "thread" then
-                finalString = finalString .. ("  "):rep(#names + 1) .. tostring(i) .. " = " .. type(v) .. "\n"
+                finalString = finalString .. ("  "):rep(#names + 1) .. i .. " = \"" .. type(v) .. "\"\n"
+            elseif type(i) == "string" then
+                finalString = finalString .. ("  "):rep(#names + 1) .. i .. " = " .. toTableVal(v) .. "\n"
             else
-                finalString = finalString .. ("  "):rep(#names + 1) .. tostring(i) .. " = " .. tostring(v) .. "\n"
+                finalString = finalString ..
+                    ("  "):rep(#names + 1) .. "[" .. toTableVal(i) .. "] = " .. toTableVal(v) .. "\n"
             end
         end
         ::continue::
@@ -305,6 +260,29 @@ function Rhodium.internal.printTable(t, floor)
     end
 end
 
+function Rhodium.internal.shallowPrintTable(t, floor)
+    local names = {}
+    if type(t) == "table" then
+        for i, v in pairs(t) do
+            if type(v) == "table" then
+                io.write(tostring(i) .. " = {}\n")
+            else
+                if floor then
+                    if type(v) == "number" then
+                        io.write(tostring(i) .. " = " .. Rhodium.math.round(v) .. "\n")
+                    else
+                        io.write(tostring(i) .. " = " .. v .. "\n")
+                    end
+                else
+                    io.write(tostring(i) .. " = " .. tostring(v) .. "\n")
+                end
+            end
+        end
+    else
+        io.write(tostring(t) .. "\n")
+    end
+end
+
 function Rhodium.internal.copyTable(t)
     if type(t) == "table" then
         local t2 = {}
@@ -314,6 +292,18 @@ function Rhodium.internal.copyTable(t)
             else
                 t2[i] = v
             end
+        end
+        return t2
+    else
+        return t
+    end
+end
+
+function Rhodium.internal.shallowCopyTable(t, t2)
+    if type(t) == "table" then
+        t2 = t2 or {}
+        for i, v in pairs(t) do
+            t2[i] = v
         end
         return t2
     else
@@ -359,157 +349,123 @@ function Rhodium.math.capsuleNormal(x, y, z, aX, aY, aZ, bX, bY, bZ)
     return Rhodium.math.normalize3(paX - h * baX, paY - h * baY, paZ - h * baZ)
 end
 
-function Rhodium.math.calculateSphereTangent(normal)
+function Rhodium.math.calculateSphereTangent(nx, ny, nz)
     -- Check if the normal is parallel to the up vector
-    local up = vec3(0, 1, 0)
-    local tangent = normal:cross(up)
-    if tangent:length() < 1e-6 then
-        up:release()
-        tangent:release()
-        return vec3(1, 0, 0)
+    local tx, ty, tz = Rhodium.math.cross(nx, ny, nz, 0, 1, 0)
+    if tx * tx + ty * ty + tz * tz < 1e-5 then
+        return 1, 0, 0
     else
-        up:release()
-        local t = tangent:normalize()
-        tangent:release()
-        return t
+        return Rhodium.math.normalize3(tx, ty, tz)
     end
 end
 
 function Rhodium.math.uvSphere(radius, segments)
-    local t = {}
-    -- precalculate pi * segments and pi / segments
-    local piInverseSegments = math.pi / segments
+    local vertices = Rhodium.internal.newVertexArray(6 * segments * (segments + 1))
+    local ptr = ffi.cast("RVertexFormat*", vertices)
 
-    -- cos(0) = 1, sin(0) = 0
+    local IPI = 1 / math.pi
+    local IPI2 = 1 / (math.pi * 2)
+
+    local piInverseSegments = Rhodium.math.PI2 / segments
+    local halfInverseSegments = math.pi / segments
+
+    local index = 0
+
     local cosR, sinR = 1, 0
-    -- redefine the stack variables to be local, this is faster
-    -- inverse pi, inverse pi * 2, pi * 0.5
-    for r = 0, PI2 - piInverseSegments, piInverseSegments do
+    for r = 0, Rhodium.math.PI2, piInverseSegments do
         local r2 = r + piInverseSegments
-        --math.cos(-PI05) * radius = -1 * radius = -radius, math.sin(PI05) * radius = 0 * radius = 0
-        local cosARadius = 0
-        local sinARadius = -radius
-        -- calculate cos(r) and sin(r) for the next iteration
+
+        local cosA = 0
+        local sinA = -1
+
         local cosR2 = math.cos(r2)
         local sinR2 = math.sin(r2)
-        for a = -PI05, PI05, piInverseSegments do
-            local a2 = a + piInverseSegments
+        for a = -Rhodium.math.PI05, Rhodium.math.PI05 - halfInverseSegments, halfInverseSegments do
+            local a2 = a + halfInverseSegments
 
-            local cosA2Radius = math.cos(a2) * radius
-            local sinA2Radius = math.sin(a2) * radius
+            local cosA2 = math.cos(a2)
+            local sinA2 = math.sin(a2)
 
-            table.insert(t, {
-                cosR * cosARadius,
-                sinARadius,
-                sinR * cosARadius,
-                r * IPI2,
-                (a + PI05) * IPI
-            })
-            table.insert(t, {
-                cosR2 * cosARadius,
-                sinARadius,
-                sinR2 * cosARadius,
-                r * IPI2,
-                (a2 + PI05) * IPI
-            })
-            table.insert(t, {
-                cosR * cosA2Radius,
-                sinA2Radius,
-                sinR * cosA2Radius,
-                r2 * IPI2,
-                (a + PI05) * IPI
-            })
+            local u0, u1 = r * IPI2, r2 * IPI2
+            local v0, v1 = a * IPI + 0.5, a2 * IPI + 0.5
 
-            table.insert(t, {
-                cosR * cosA2Radius,
-                sinA2Radius,
-                sinR * cosA2Radius,
-                r * IPI2,
-                (a + PI05) * IPI
-            })
-            table.insert(t, {
-                cosR2 * cosA2Radius,
-                sinA2Radius,
-                sinR2 * cosA2Radius,
-                r * IPI2,
-                (a2 + PI05) * IPI
-            })
-            table.insert(t, {
-                cosR2 * cosARadius,
-                sinARadius,
-                sinR2 * cosARadius,
-                r2 * IPI2,
-                (a + PI05) * IPI
-            })
-            -- since cosA2 = cosA + piInverseSegments and we loop to the next iteration we can just set cosA to cosA2
-            cosARadius = cosA2Radius
-            sinARadius = sinA2Radius
+            local x, y, z = cosR * cosA, sinA, sinR * cosA
+            ptr[index] = ffi.new("RVertexFormat",
+                { x, y, z },
+                Rhodium.internal.encodeVertexNormal(x, y, z),
+                Rhodium.internal.encodeVertexTangent(Rhodium.math.calculateSphereTangent(x, y, z)),
+                { Rhodium.internal.encodeVertexTexCoords(u0, v0) }
+            ); index = index + 1
+
+            x, y, z = cosR * cosA2, sinA2, sinR * cosA2
+            ptr[index] = ffi.new("RVertexFormat",
+                { x, y, z },
+                Rhodium.internal.encodeVertexNormal(x, y, z),
+                Rhodium.internal.encodeVertexTangent(Rhodium.math.calculateSphereTangent(x, y, z)),
+                { Rhodium.internal.encodeVertexTexCoords(u0, v1) }
+            ); index = index + 1
+
+            x, y, z = cosR2 * cosA, sinA, sinR2 * cosA
+            ptr[index] = ffi.new("RVertexFormat",
+                { x, y, z },
+                Rhodium.internal.encodeVertexNormal(x, y, z),
+                Rhodium.internal.encodeVertexTangent(Rhodium.math.calculateSphereTangent(x, y, z)),
+                { Rhodium.internal.encodeVertexTexCoords(u1, v0) }
+            ); index = index + 1
+
+            x, y, z = cosR * cosA2, sinA2, sinR * cosA2
+            ptr[index] = ffi.new("RVertexFormat",
+                { x, y, z },
+                Rhodium.internal.encodeVertexNormal(x, y, z),
+                Rhodium.internal.encodeVertexTangent(Rhodium.math.calculateSphereTangent(x, y, z)),
+                { Rhodium.internal.encodeVertexTexCoords(u0, v1) }
+            ); index = index + 1
+
+            x, y, z = cosR2 * cosA2, sinA2, sinR2 * cosA2
+            ptr[index] = ffi.new("RVertexFormat",
+                { x, y, z },
+                Rhodium.internal.encodeVertexNormal(x, y, z),
+                Rhodium.internal.encodeVertexTangent(Rhodium.math.calculateSphereTangent(x, y, z)),
+                { Rhodium.internal.encodeVertexTexCoords(u1, v1) }
+            ); index = index + 1
+
+            x, y, z = cosR2 * cosA, sinA, sinR2 * cosA
+            ptr[index] = ffi.new("RVertexFormat",
+                { x, y, z },
+                Rhodium.internal.encodeVertexNormal(x, y, z),
+                Rhodium.internal.encodeVertexTangent(Rhodium.math.calculateSphereTangent(x, y, z)),
+                { Rhodium.internal.encodeVertexTexCoords(u1, v0) }
+            ); index = index + 1
+
+            cosA = cosA2
+            sinA = sinA2
         end
         cosR = cosR2
         sinR = sinR2
     end
-    for i, vertex in ipairs(t) do
-        vertex[6], vertex[7], vertex[8] = Rhodium.math.normalize3(vertex[1], vertex[2], vertex[3])
+
+    local ffiIndices, type = Rhodium.internal.newIndexArray(ffi.sizeof(vertices) / ffi.sizeof("RVertexFormat"))
+
+    for i = 0, ffi.sizeof(vertices) / ffi.sizeof("RVertexFormat") - 1 do
+        ffiIndices[i] = i
     end
-    return t
+
+    return vertices, ffiIndices, type
 end
 
 function Rhodium.internal.newID(i)
-    i = i or "global"
+    i = i or "Global"
     Rhodium.internal.idCounters[i] = (Rhodium.internal.idCounters[i] or 0) + 1
     return Rhodium.internal.idCounters[i] - 1
 end
 
+--- mix between two values
+---@param i number
+---@param v number
+---@param w number
+---@return number
 function Rhodium.math.mix(i, v, w)
-    if type(v) == "table" then
-        if type(w) == "table" then
-            if type(i) == "table" then
-                local t = {}
-                for j = 1, #v do
-                    t[j] = (1 - i[j]) * v[j] + i[j] * w[j]
-                end
-                return t
-            else
-                local t = {}
-                for j = 1, #v do
-                    t[j] = (1 - i) * v[j] + i * w[j]
-                end
-                return t
-            end
-        else
-            if type(i) == "table" then
-                local t = {}
-                for j = 1, #v do
-                    t[j] = (1 - i[j]) * v[j] + i[j] * w
-                end
-                return t
-            else
-                local t = {}
-                for j = 1, #v do
-                    t[j] = (1 - i) * v[j] + i * w
-                end
-                return t
-            end
-        end
-    else
-        if type(w) == "table" then
-            if type(i) == "table" then
-                local t = {}
-                for j = 1, #w do
-                    t[j] = (1 - i[j]) * v + i[j] * w[j]
-                end
-                return t
-            else
-                local t = {}
-                for j = 1, #w do
-                    t[j] = (1 - i) * v + i * w[j]
-                end
-                return t
-            end
-        else
-            return (1 - i) * v + i * w
-        end
-    end
+    return (1 - i) * v + i * w
 end
 
 function Rhodium.math.cross(x1, y1, z1, x2, y2, z2)
@@ -534,7 +490,7 @@ end
 
 function Rhodium.math.lerp(angle, target, turnrate)
     local dist = target - angle
-    dist = (dist + math.pi) % PI2 - math.pi
+    dist = (dist + math.pi) % Rhodium.math.PI2 - math.pi
     local step = turnrate * love.timer.getDelta()
     if math.abs(dist) <= step then
         angle = target
@@ -555,41 +511,124 @@ function Rhodium.math.smoothLerp(angle, target, turnrate)
 end
 
 function Rhodium.math.pointAABBDistance(min, max, position)
-    local d = 0
-    if position.x < min.x then
-        d = d + (position.x - min.x) ^ 2
-    elseif position.x > max.x then
-        d = d + (position.x - max.x) ^ 2
+    local q = vec3(math.max(0, math.max(min.x - position.x, position.x - max.x)),
+        math.max(0, math.max(min.y - position.y, position.y - max.y)),
+        math.max(0, math.max(min.z - position.z, position.z - max.z)))
+
+    local outsideDist = q:length()
+
+    local isInside = position.x >= min.x and position.x <= max.x and position.y >= min.y and position.y <= max.y and
+        position.z >= min.z and position.z <= max.z
+
+    if isInside then
+        return 0
+    else
+        return outsideDist
     end
-    if position.y < min.y then
-        d = d + (position.y - min.y) ^ 2
-    elseif position.y > max.y then
-        d = d + (position.y - max.y) ^ 2
+end
+
+function Rhodium.math.signedPointAABBDistance(min, max, position)
+    local q = vec3(math.max(0, math.max(min.x - position.x, position.x - max.x)),
+        math.max(0, math.max(min.y - position.y, position.y - max.y)),
+        math.max(0, math.max(min.z - position.z, position.z - max.z)))
+
+    local outsideDist = q:length()
+
+    local isInside = position.x >= min.x and position.x <= max.x and position.y >= min.y and position.y <= max.y and
+        position.z >= min.z and position.z <= max.z
+
+    if isInside then
+        local distToMin = position - min
+        local distToMax = max - position
+        local insideDist = math.min(math.min(distToMin.x, distToMax.x), math.min(math.min(distToMin.y, distToMax.y),
+            math.min(distToMin.z, distToMax.z)))
+        return -insideDist
+    else
+        return outsideDist
     end
-    if position.z < min.z then
-        d = d + (position.z - min.z) ^ 2
-    elseif position.z > max.z then
-        d = d + (position.z - max.z) ^ 2
-    end
-    return math.sqrt(d)
 end
 
 function Rhodium.math.pointAABBDistanceSqr(min, max, position)
+    local q = vec3(math.max(0, math.max(min.x - position.x, position.x - max.x)),
+        math.max(0, math.max(min.y - position.y, position.y - max.y)),
+        math.max(0, math.max(min.z - position.z, position.z - max.z)))
+
+    local outsideDist = q:lengthSqr()
+
+    local isInside = position.x >= min.x and position.x <= max.x and position.y >= min.y and position.y <= max.y and
+        position.z >= min.z and position.z <= max.z
+
+    if isInside then
+        return 0
+    else
+        return outsideDist
+    end
+end
+
+function Rhodium.math.signedPointAABBDistanceSqr(min, max, position)
+    local q = vec3(math.max(0, math.max(min.x - position.x, position.x - max.x)),
+        math.max(0, math.max(min.y - position.y, position.y - max.y)),
+        math.max(0, math.max(min.z - position.z, position.z - max.z)))
+
+    local outsideDist = q:lengthSqr()
+
+    local isInside = position.x >= min.x and position.x <= max.x and position.y >= min.y and position.y <= max.y and
+        position.z >= min.z and position.z <= max.z
+
+    if isInside then
+        local distToMin = position - min
+        local distToMax = max - position
+        local insideDist = math.min(math.min(distToMin.x, distToMax.x), math.min(math.min(distToMin.y, distToMax.y),
+            math.min(distToMin.z, distToMax.z)))
+        return -insideDist * insideDist
+    else
+        return outsideDist
+    end
+end
+
+function Rhodium.math.pointAABBDistanceSqrSeperate(minX, minY, minZ, maxX, maxY, maxZ, x, y, z)
+    local qx = math.max(0, math.max(minX - x, x - maxX))
+    local qy = math.max(0, math.max(minY - y, y - maxY))
+    local qz = math.max(0, math.max(minZ - z, z - maxZ))
+
+    local outsideDist = qx * qx + qy * qy + qz * qz
+
+    local isInside = x >= minX and x <= maxX and y >= minY and y <= maxY and z >= minZ and z <= maxZ
+
+    if isInside then
+        local distToMinX = x - minX
+        local distToMinY = y - minY
+        local distToMinZ = z - minZ
+
+        local distToMaxX = maxX - x
+        local distToMaxY = maxY - y
+        local distToMaxZ = maxZ - z
+
+        local insideDist = math.min(math.min(distToMinX, distToMaxX), math.min(math.min(distToMinY, distToMaxY),
+            math.min(distToMinZ, distToMaxZ)))
+
+        return -insideDist * insideDist
+    else
+        return outsideDist
+    end
+end
+
+function Rhodium.math.pointAABBDistanceSqrCentered(boxCenter, scale, position)
     local d = 0
-    if position.x < min.x then
-        d = d + (position.x - min.x) ^ 2
-    elseif position.x > max.x then
-        d = d + (position.x - max.x) ^ 2
+    if position.x < boxCenter.x - scale.x then
+        d = d + (position.x - (boxCenter.x - scale.x)) ^ 2
+    elseif position.x > boxCenter.x + scale.x then
+        d = d + (position.x - (boxCenter.x + scale.x)) ^ 2
     end
-    if position.y < min.y then
-        d = d + (position.y - min.y) ^ 2
-    elseif position.y > max.y then
-        d = d + (position.y - max.y) ^ 2
+    if position.y < boxCenter.y - scale.y then
+        d = d + (position.y - (boxCenter.y - scale.y)) ^ 2
+    elseif position.y > boxCenter.y + scale.y then
+        d = d + (position.y - (boxCenter.y + scale.y)) ^ 2
     end
-    if position.z < min.z then
-        d = d + (position.z - min.z) ^ 2
-    elseif position.z > max.z then
-        d = d + (position.z - max.z) ^ 2
+    if position.z < boxCenter.z - scale.z then
+        d = d + (position.z - (boxCenter.z - scale.z)) ^ 2
+    elseif position.z > boxCenter.z + scale.z then
+        d = d + (position.z - (boxCenter.z + scale.z)) ^ 2
     end
     return d
 end
@@ -637,39 +676,30 @@ do -- define rotation conversions
 
     ---@return matrix4x4 m
     function Rhodium.math.quaternionToMatrix(q)
-        local sqw = q.w * q.w
-        local sqx = q.x * q.x
-        local sqy = q.y * q.y
-        local sqz = q.z * q.z
-
-        -- invs (inverse square length) is only required if quaternion is not already normalised
-        local invs = 1 / (sqx + sqy + sqz + sqw)
         local m = mat4()
-        m[1][1] = (sqx - sqy - sqz + sqw) * invs
-        m[2][2] = (-sqx + sqy - sqz + sqw) * invs
-        m[3][3] = (-sqx - sqy + sqz + sqw) * invs
+        m[1][1] = (q.x * q.x - q.y * q.y - q.z * q.z + q.w * q.w)
+        m[2][2] = (-q.x * q.x + q.y * q.y - q.z * q.z + q.w * q.w)
+        m[3][3] = (-q.x * q.x - q.y * q.y + q.z * q.z + q.w * q.w)
 
-        local tmp1 = q.x * q.y
-        local tmp2 = q.z * q.w
-        m[2][1] = 2.0 * (tmp1 + tmp2) * invs
-        m[1][2] = 2.0 * (tmp1 - tmp2) * invs
+        m[2][1] = 2.0 * (q.x * q.y + q.z * q.w)
+        m[1][2] = 2.0 * (q.x * q.y - q.z * q.w)
 
-        tmp1 = q.x * q.z
-        tmp2 = q.y * q.w
-        m[3][1] = 2.0 * (tmp1 - tmp2) * invs
-        m[1][3] = 2.0 * (tmp1 + tmp2) * invs
-        tmp1 = q.y * q.z
-        tmp2 = q.x * q.w
-        m[3][2] = 2.0 * (tmp1 + tmp2) * invs
-        m[2][3] = 2.0 * (tmp1 - tmp2) * invs
+        m[3][1] = 2.0 * (q.x * q.z - q.y * q.w)
+        m[1][3] = 2.0 * (q.x * q.z + q.y * q.w)
+        m[3][2] = 2.0 * (q.y * q.z + q.x * q.w)
+        m[2][3] = 2.0 * (q.y * q.z - q.x * q.w)
 
         return m
     end
 
     -- Other to Quaternion:
 
+    ---@param pitch number
+    ---@param yaw number
+    ---@param roll number
+    ---@param quat quaternion?
     ---@return quaternion quat
-    function Rhodium.math.eulerToQuaternion(pitch, yaw, roll)
+    function Rhodium.math.eulerToQuaternion(pitch, yaw, roll, quat)
         if type(pitch) == "table" or not pitch or not yaw or not roll then
             error("Rhodium.math.eulerToQuaternion: invalid input")
         end
@@ -692,7 +722,7 @@ do -- define rotation conversions
         local x = c1c2 * s3 + s1s2 * c3
         local y = s1 * c2 * c3 + c1 * s2 * s3
         local z = c1 * s2 * c3 - s1 * c2 * s3
-        return quaternion(x, y, z, w)
+        return quat and quat:set(x, y, z, w) or quaternion(x, y, z, w)
     end
 
     ---@return quaternion quat
@@ -736,25 +766,30 @@ do -- define rotation conversions
     ---@return number yaw
     ---@return number roll
     function Rhodium.math.quaternionToEuler(q)
+        local sqw = q.w * q.w
+        local sqx = q.x * q.x
+        local sqy = q.y * q.y
+        local sqz = q.z * q.z
+        local unit = sqx + sqy + sqz + sqw -- if normalised is one, otherwise is correction factor
         local test = q.x * q.y + q.z * q.w
-        local heading, attitude, bank
 
-        if test > 0.499 then -- singularity at north pole
+        local heading, attitude, bank
+        if (test > 0.4999 * unit) then -- singularity at north pole
             heading = 2 * math.atan2(q.x, q.w)
             attitude = math.pi / 2
             bank = 0
-        elseif test < -0.499 then -- singularity at south pole
+            return bank, heading, attitude
+        end
+        if (test < -0.4999 * unit) then -- singularity at south pole
             heading = -2 * math.atan2(q.x, q.w)
             attitude = -math.pi / 2
             bank = 0
-        else
-            local sqx = q.x * q.x
-            local sqy = q.y * q.y
-            local sqz = q.z * q.z
-            heading = math.atan2(2 * q.y * q.w - 2 * q.x * q.z, 1 - 2 * sqy - 2 * sqz)
-            attitude = math.asin(2 * test)
-            bank = math.atan2(2 * q.x * q.w - 2 * q.y * q.z, 1 - 2 * sqx - 2 * sqz)
+            return bank, heading, attitude
         end
+        heading = math.atan2(2 * q.y * q.w - 2 * q.x * q.z, sqx - sqy - sqz + sqw)
+        attitude = math.asin(2 * test / unit)
+        bank = math.atan2(2 * q.x * q.w - 2 * q.y * q.z, -sqx + sqy - sqz + sqw)
+
         -- this function assumes pitch is about the z-axis rather than the x-axis (??)
         return bank, heading, attitude
     end
@@ -795,17 +830,34 @@ function Rhodium.math.newTranslationMatrix(position)
     return m
 end
 
-function Rhodium.math.calculateCameraMatrix()
-    Camera.rotationMatrix = Rhodium.math.eulerToMatrix(
-        -Camera.pitch,
-        -Camera.yaw,
-        -Camera.roll
-    )
+do
+    local vertices = {
+        { -1, -1, -1 },
+        { 1,  -1, -1 },
+        { 1,  1,  -1 },
+        { -1, 1,  -1 },
+        { -1, -1, 1 },
+        { 1,  -1, 1 },
+        { 1,  1,  1 },
+        { -1, 1,  1 }
+    }
 
-    Camera.viewMatrix = Rhodium.math.newTranslationMatrix(-Camera.position) * Camera.rotationMatrix
-    Camera.viewProjectionMatrix = Camera.viewMatrix * Camera.projectionMatrix
+    ---comment
+    ---@param inverseViewProjectionMatrix matrix4x4
+    ---@return table
+    function Rhodium.math.frustumCornerPoints(inverseViewProjectionMatrix)
+        local points = {}
 
-    return Camera.viewProjectionMatrix
+        for i, v in ipairs(vertices) do
+            points[i] = { inverseViewProjectionMatrix:vMulSepW1(unpack(v)) }
+
+            points[i][1] = points[i][1] / points[i][4]
+            points[i][2] = points[i][2] / points[i][4]
+            points[i][3] = points[i][3] / points[i][4]
+        end
+
+        return points
+    end
 end
 
 ---@param matrix matrix4x4
@@ -860,9 +912,7 @@ function Rhodium.math.frustumFromMatrix(matrix)
     }
 end
 
-function Rhodium.math.frustumAABB(fru, box)
-    local x, y, z, w, h, d = unpack(box)
-    local x1, y1, z1 = x + w, y + h, z + d
+function Rhodium.math.frustumAABB(fru, x, y, z, x1, y1, z1)
     local dot = Rhodium.math.dot
     for i = 1, 6 do
         local frustum = fru.frustum[i]
@@ -879,41 +929,51 @@ function Rhodium.math.frustumAABB(fru, box)
         end
     end
 
-    --local out
-    --out=0; for i = 1,8 do out = out + ((fru.corners[i][1] > x1) and 1 or 0) end; if out == 8 then return false end
-    --out=0; for i = 1,8 do out = out + ((fru.corners[i][1] < x) and 1 or 0) end; if out == 8 then return false end
-    --out=0; for i = 1,8 do out = out + ((fru.corners[i][2] > y1) and 1 or 0) end; if out == 8 then return false end
-    --out=0; for i = 1,8 do out = out + ((fru.corners[i][2] < y) and 1 or 0) end; if out == 8 then return false end
-    --out=0; for i = 1,8 do out = out + ((fru.corners[i][3] > z1) and 1 or 0) end; if out == 8 then return false end
-    --out=0; for i = 1,8 do out = out + ((fru.corners[i][3] < z) and 1 or 0) end; if out == 8 then return false end
-
     return true
+end
+
+---@class Rhodium.ray
+---@field position vec3
+---@field direction vec3
+---@field length number
+
+
+---creates a new ray
+---@param position vec3
+---@param direction vec3
+---@param length number
+---@return Rhodium.ray
+function Rhodium.math.newRay(position, direction, length)
+    Rhodium.assertType(position, "vec3", "Rhodium.math.newRay: position")
+    Rhodium.assertType(direction, "vec3", "Rhodium.math.newRay: direction")
+    Rhodium.assertType(length, "number", "Rhodium.math.newRay: length")
+
+    return {
+        position = position,
+        direction = direction,
+        length = length
+    }
 end
 
 ---returns a ray that goes from the camera position to the x,y position
 ---@param x number
 ---@param y number
----@return ray ray length undefined
-function Rhodium.math.screenPositionToRay(x, y)
-    local clip = vec4(
-        (x / love.graphics.getWidth() - 0.5) * 2,
-        -(y / love.graphics.getHeight() - 0.5) * 2,
-        1, 1
+---@param camera Rhodium.camera
+---@return Rhodium.ray ray length undefined
+function Rhodium.math.screenPositionToRay(x, y, camera, outRay)
+    local vx, vy, vz, vw = camera.inverseProjectionMatrix:vMulSepW1(
+        (x / camera.screenSize[1] - 0.5) * 2.0,
+        (y / camera.screenSize[2] - 0.5) * 2.0,
+        1.0
     )
 
-    local view = Rhodium.internal.graphicsData.cameraProjectionMatrix:transpose():invert():vMul(clip)
-    view = view / view.w
-    local world = Rhodium.internal.graphicsData.viewMatrix:transpose():invert():vMul(view)
-    local cameraPosition = Rhodium.internal.graphicsData.cameraPosition
-    local worldPos = vec3(world)
-    local data = { position = cameraPosition, direction = (worldPos - cameraPosition):normalize() }
-    worldPos:release()
-    return data
-end
+    vx, vy, vz = vx / vw, vy / vw, vz / vw
+    local wx, wy, wz = camera.inverseViewMatrix:vMulSepW0(vx, vy, vz)
 
----@deprecated
-function Rhodium.math.eulerFromMatrix(m)
-    error("Rhodium.math.eulerFromMatrix: renamed to Rhodium.math.matrixToEuler")
+    outRay.position:set(camera.position:get())
+    outRay.direction:set(Rhodium.math.normalize3(wx, wy, wz))
+
+    return outRay
 end
 
 function Rhodium.math.length(...)
@@ -950,7 +1010,7 @@ function Rhodium.math.crossVector(v1, v2)
     return vec3(v1.y * v2.z - v1.z * v2.y, v1.z * v2.x - v1.x * v2.z, v1.x * v2.y - v1.y * v2.x)
 end
 
-function Rhodium.math.dotVector(v1, v2)
+function Rhodium.math.dotVector3(v1, v2)
     return v1.x * v2.x + v1.y * v2.y + v1.z * v2.z
 end
 
@@ -959,11 +1019,16 @@ end
 ---@param quat quaternion
 ---@return vec3
 function Rhodium.math.rotatePosition(position, quat)
-    -- position + 2 * q:cross(q:cross(position) + position * quat[4])
-    return position + 2 * quat:crossVector(quat:crossVector(position) + position * quat.w)
+    local cx = quat.y * position.z - quat.z * position.y + position.x * quat.w
+    local cy = quat.z * position.x - quat.x * position.z + position.y * quat.w
+    local cz = quat.x * position.y - quat.y * position.x + position.z * quat.w
+
+    return vec3(position.x + 2 * (quat.y * cz - quat.z * cy),
+        position.y + 2 * (quat.z * cx - quat.x * cz),
+        position.z + 2 * (quat.x * cy - quat.y * cx))
 end
 
---- Rotate a position using normal variables instead of vectors or quaternions (12x faster than Rhodium.math.rotatePosition)
+--- Rotate a position using normal variables instead of vectors or quaternions
 ---@param x number -- position x
 ---@param y number -- position y
 ---@param z number -- position z
@@ -972,7 +1037,7 @@ end
 ---@param qz number -- quaternion z
 ---@param qw number -- quaternion w
 ---@return number, number, number
-function Rhodium.math.rotatePositionSeperate(x, y, z, qx, qy, qz, qw)
+function Rhodium.math.rotatePositionSeparate(x, y, z, qx, qy, qz, qw)
     local cx = qy * z - qz * y + x * qw
     local cy = qz * x - qx * z + y * qw
     local cz = qx * y - qy * x + z * qw
@@ -996,6 +1061,46 @@ function Rhodium.math.verticesToTriangles(vertices, indices, triangles)
     return triangles
 end
 
+--- converts vertices and indices to a triangle list
+---@param vertices love.ByteData|ffi.cdata*
+---@param indices love.ByteData|ffi.cdata*
+---@param vertexformat string
+---@param indexformat string
+function Rhodium.math.ffiVerticesToTriangles(vertices, indices, vertexformat, indexformat)
+    local CIndexFormat = indexformat == "uint16" and "uint16_t" or
+        (indexformat == "uint32" and "uint32_t" or indexformat)
+
+    local Fvertices, Findices, indicesLength
+    if type(vertices) == "cdata" then
+        Fvertices = vertices
+        Findices = indices
+
+        if Findices then
+            Rhodium.internal.assert(Findices, "Rhodium.math.ffiVerticesToTriangles: invalid indices")
+            Rhodium.internal.assert(CIndexFormat, "Rhodium.math.ffiVerticesToTriangles: invalid index format")
+            indicesLength = ffi.sizeof(Findices) / ffi.sizeof(CIndexFormat)
+        end
+    else
+        Fvertices = ffi.cast(vertexformat .. "*", vertices:getFFIPointer())
+        Findices = ffi.cast(CIndexFormat .. "*", indices:getFFIPointer())
+        indicesLength = indices:getSize() / ffi.sizeof(CIndexFormat)
+    end
+
+    if indicesLength % 3 ~= 0 then
+        error("Rhodium.math.verticesToTriangles: invalid indices")
+    end
+
+    local triangles = love.data.newByteData(indicesLength * ffi.sizeof(vertexformat))
+
+    local trianglesPtr = ffi.cast(vertexformat .. "*", triangles:getFFIPointer())
+
+    for i = 0, indicesLength - 1 do
+        trianglesPtr[i] = Fvertices[Findices[i]]
+    end
+
+    return triangles
+end
+
 function Rhodium.math.rotatePositions(...)
     local t = { ... }
     local q = t[#t]
@@ -1007,7 +1112,7 @@ function Rhodium.math.rotatePositions(...)
 end
 
 --- Rotate positions using normal variables instead of vectors or quaternions (12x faster than Rhodium.math.rotatePosition)
-function Rhodium.math.rotatePositionsSeperate(...)
+function Rhodium.math.rotatePositionsSeparate(...)
     local t = { ... }
     local qx, qy, qz, qw = t[#t][1], t[#t][2], t[#t][3], t[#t][4]
     local vertices = {}
@@ -1027,7 +1132,7 @@ function Rhodium.math.rotatePositionsSeperate(...)
 end
 
 --- Rotate positions using normal variables instead of vectors or quaternions (12x faster than Rhodium.math.rotatePosition)
-function Rhodium.math.rotateTablePositionsSeperate(vertices, qx, qy, qz, qw)
+function Rhodium.math.rotateTablePositionsSeparate(vertices, qx, qy, qz, qw)
     local newPoints = {}
     for i = 1, #vertices do
         local x, y, z = vertices[i][1], vertices[i][2], vertices[i][3]
@@ -1058,6 +1163,29 @@ function Rhodium.math.triangleNormal(p1, p2, p3, inverted)
     local x = (uy * vz - uz * vy) * (inverted and -1 or 1)
     local y = (uz * vx - ux * vz) * (inverted and -1 or 1)
     local z = (ux * vy - uy * vx) * (inverted and -1 or 1)
+    return Rhodium.math.normalize3(x, y, z)
+end
+
+--- calculates the triangle normal of a triangle
+--- using separate x, y, z values
+---@param x0 number point 1 x
+---@param y0 number point 1 y
+---@param z0 number point 1 z
+---@param x1 number point 2 x
+---@param y1 number point 2 y
+---@param z1 number point 2 z
+---@param x2 number point 3 x
+---@param y2 number point 3 y
+---@param z2 number point 3 z
+---@return number x
+---@return number y
+---@return number z
+function Rhodium.math.triangleNormalSeparate(x0, y0, z0, x1, y1, z1, x2, y2, z2)
+    local ux, uy, uz = x1 - x0, y1 - y0, z1 - z0
+    local vx, vy, vz = x2 - x0, y2 - y0, z2 - z0
+    local x = uy * vz - uz * vy
+    local y = uz * vx - ux * vz
+    local z = ux * vy - uy * vx
     return Rhodium.math.normalize3(x, y, z)
 end
 
@@ -1158,9 +1286,8 @@ function Rhodium.math.closestPointOnTriangle(a, b, c, point)
     local vc = d1 * d4 - d3 * d2
     if vc <= 0 and d1 >= 0 and d3 <= 0 then
         local v = d1 / (d1 - d3)
-        local temp = vec3(abX, abY, abZ) * v
-        local point = vec3(a) + temp
-        temp:release()
+        local temp = Rhodium.math.tempVec3(abX, abY, abZ) * v
+        local point = Rhodium.math.tempVec3(a) + temp
         return point
     end
 
@@ -1177,35 +1304,28 @@ function Rhodium.math.closestPointOnTriangle(a, b, c, point)
     local vb = d5 * d2 - d1 * d6
     if vb <= 0 and d2 >= 0 and d6 <= 0 then
         local w = d2 / (d2 - d6)
-        local temp = vec3(acX, acY, acZ) * w
-        local point = vec3(a) + temp
-        temp:release()
+        local temp = Rhodium.math.tempVec3(acX, acY, acZ) * w
+        local point = Rhodium.math.tempVec3(a) + temp
         return point
     end
 
     local va = d3 * d6 - d5 * d4
     if va <= 0 and (d4 - d3) >= 0 and (d5 - d6) >= 0 then
         local w = (d4 - d3) / ((d4 - d3) + (d5 - d6))
-        local vec3C = vec3(c)
-        local vec3B = vec3(b)
+        local vec3C = Rhodium.math.tempVec3(c)
+        local vec3B = Rhodium.math.tempVec3(b)
         local temp = vec3C - vec3B
         local point = vec3B + temp * w
-        temp:release()
-        vec3C:release()
-        vec3B:release()
         return point
     end
 
     local denom = 1 / (va + vb + vc)
     local v = vb * denom
     local w = vc * denom
-    local vec3A = vec3(a)
-    local vec3AB = vec3(abX, abY, abZ)
-    local vec3AC = vec3(acX, acY, acZ)
+    local vec3A = Rhodium.math.tempVec3(a)
+    local vec3AB = Rhodium.math.tempVec3(abX, abY, abZ)
+    local vec3AC = Rhodium.math.tempVec3(acX, acY, acZ)
     local point = vec3A + vec3AB * v + vec3AC * w
-    vec3A:release()
-    vec3AB:release()
-    vec3AC:release()
     return point
 end
 
@@ -1294,15 +1414,17 @@ function Rhodium.math.axisAngleToEuler(axisAngle)
     local s = math.sin(angle)
     local c = math.cos(angle)
     local t = 1 - c
+
+    local yaw, pitch, roll
     if (x * y * t + z * s) > 0.998 then
         yaw = 2 * math.atan2(x * math.sin(angle / 2), math.cos(angle / 2))
-        pitch = PI05
+        pitch = Rhodium.math.PI05
         roll = 0
         return pitch, yaw, roll
     end
     if (x * y * t + z * s) < -0.998 then
         yaw = -2 * math.atan2(x * math.sin(angle / 2), math.cos(angle / 2))
-        pitch = -PI05
+        pitch = -Rhodium.math.PI05
         roll = 0
         return pitch, yaw, roll
     end
@@ -1313,31 +1435,31 @@ function Rhodium.math.axisAngleToEuler(axisAngle)
 end
 
 function Rhodium.math.axisAngleToQuat(axisAngle)
-    local angle = axisAngle[4] * 0.5
+    local angle = axisAngle.w * 0.5
     local sinAngle = math.sin(angle)
     return quaternion(
-        axisAngle[1] * sinAngle,
-        axisAngle[2] * sinAngle,
-        axisAngle[3] * sinAngle,
+        axisAngle.x * sinAngle,
+        axisAngle.y * sinAngle,
+        axisAngle.z * sinAngle,
         math.cos(angle)
-    )
+    ):normalize()
 end
 
 function Rhodium.math.quatToAxisAngle(quat)
-    local angle = math.acos(quat[4]) * 2
-    local mul = 1 / math.sqrt(1 - quat[4] * quat[4])
+    local angle = math.acos(quat.w) * 2
+    local mul = 1 / math.sqrt(1 - quat.w * quat.w)
     if mul > 1000 then
         return vec4(
-            quat[1],
-            quat[2],
-            quat[3],
+            quat.x,
+            quat.y,
+            quat.z,
             math.cos(angle)
         )
     else
         return vec4(
-            quat[1] * mul,
-            quat[2] * mul,
-            quat[3] * mul,
+            quat.x * mul,
+            quat.y * mul,
+            quat.z * mul,
             math.cos(angle)
         )
     end
@@ -1366,64 +1488,25 @@ function Rhodium.internal.combine(...)
     end
 end
 
---- returns the type of a variable
----@param x any
----@return "vec2"|"vec3"|"vec4"|"quaternion"|"physicsBody"|"physicsShape"|"unknown"|"spotLight"|"sunLight"|"pointLight"|"areaLight"|"volume"|"uiConstraintPoint"
-function Rhodium.math.type(x)
-    local t = type(x)
-    if t == "cdata" then
-        local ct = ffi.typeof(x)
-
-        if ct == Rhodium.internal.types.vec2 then
-            return "vec2"
-        elseif ct == Rhodium.internal.types.vec3 then
-            return "vec3"
-        elseif ct == Rhodium.internal.types.vec4 then
-            return "vec4"
-        elseif ct == Rhodium.internal.types.quaternion then
-            return "quaternion"
-        else
-            return "unknown"
-        end
-    elseif t == "table" then
-        -- check for Rhodium.jolt.body, Rhodium.physicsShape
-        if x.type == "physicsBody" then
-            return "physicsBody"
-        elseif x.type == "physicsShape" then
-            return "physicsShape"
-        elseif x.type == "spot" then
-            return "spotLight"
-        elseif x.type == "sun" then
-            return "sunLight"
-        elseif x.type == "point" then
-            return "pointLight"
-        elseif x.type == "area" then
-            return "areaLight"
-        elseif x.type == "volume" then
-            return "volume"
-        elseif x.type == "uiConstraintPoint" then
-            return "uiConstraintPoint"
-        else
-            return "unknown"
-        end
-    else
-        return "unknown"
-    end
-end
-
+--- Ray-Torus intersection
+---@param r table ray
+---@param tor vec2 x: radius, y: ring radius
+---@param position vec3 position
+---@param quat quaternion rotation
+---@return number|nil
 function Rhodium.math.rayTorus(r, tor, position, quat)
     local ray = {}
     do -- reposition the ray to account for the fact that i can't rotate the torus
-        ray.position = Rhodium.math.rotatePosition(r.position - position, quat)
-        ray.direction = Rhodium.math.rotatePosition(r.direction, quat)
+        ray.position = Rhodium.math.rotatePosition(r.position - position, quat:invert())
+        ray.direction = Rhodium.math.rotatePosition(r.direction, quat:invert())
     end
     local po = 1.0
 
     local Ra2 = tor.x * tor.x
     local ra2 = tor.y * tor.y
 
-    local m = Rhodium.math.dotVector(ray.position, ray.position)
-    local n = Rhodium.math.dotVector(ray.position, ray.direction)
+    local m = Rhodium.math.dotVector3(ray.position, ray.position)
+    local n = Rhodium.math.dotVector3(ray.position, ray.direction)
 
     local k = (m - ra2 - Ra2) / 2.0
     local k3 = n
@@ -1460,8 +1543,8 @@ function Rhodium.math.rayTorus(r, tor, position, quat)
         h = math.sqrt(h)
         local v = Rhodium.math.sign(R + h) * (math.abs(R + h) ^ (1.0 / 3.0))
         local u = Rhodium.math.sign(R - h) * (math.abs(R - h) ^ (1.0 / 3.0))
-        s = vec3((v + u) + 4.0 * c2, (v - u) * math.sqrt(3.0))
-        local y = math.sqrt(0.5 * (s:length() + s[1]))
+        local s = Rhodium.math.tempVec3((v + u) + 4.0 * c2, (v - u) * math.sqrt(3.0))
+        local y = math.sqrt(0.5 * (s:length() + s.x))
         local x = 0.5 * s.y / y
         local r = 2.0 * c1 / (x * x + y * y)
         local t1 = x - r - k3
@@ -1517,7 +1600,7 @@ function Rhodium.math.rayCapsule(ray, topX, topY, topZ, baseX, baseY, baseZ, rad
             return t
         end
         local oc = y <= 0.0 and vec3(oaX, oaY, oaZ) or
-            vec3(ray.position.x - baseX, ray.position.y - baseY, ray.position.z - baseZ)
+            Rhodium.math.tempVec3(ray.position.x - baseX, ray.position.y - baseY, ray.position.z - baseZ)
         b = dot(ray.direction.x, ray.direction.y, ray.direction.z, oc.x, oc.y, oc.z)
         c = dot(oc.x, oc.y, oc.z, oc.x, oc.y, oc.z) - radius * radius
         h = b * b - c
@@ -1553,7 +1636,6 @@ function Rhodium.math.rayCylinder(ray, topX, topY, topZ, baseX, baseY, baseZ, ra
     if math.abs(k1 + k2 * t) < h then
         return t, vec3(baX, baY, baZ) * Rhodium.math.sign(y) / math.sqrt(baba)
     end
-    return
 end
 
 function Rhodium.math.raySphere(ray, x, y, z, radius)
@@ -1569,11 +1651,64 @@ function Rhodium.math.raySphere(ray, x, y, z, radius)
         local dist = (-b - math.sqrt(d)) / (2 * a)
 
         if (dist >= 0) then
-            local hitPos = ray.position + ray.direction * dist
-            local normal = hitPos - vec3(x, y, z)
-            return dist, hitPos, normal:normalize()
+            local hitPos = ray.position + ray.direction
+            mathv.mulScalar3(hitPos, dist, hitPos)
+            local normal = hitPos - Rhodium.math.tempVec3(x, y, z)
+            return dist, hitPos, normal:normalizeSelf()
         end
     end
+end
+
+--- checks if a ray intersects with an AABB
+---@param rayX number
+---@param rayY number
+---@param rayZ number
+---@param rayDirX number
+---@param rayDirY number
+---@param rayDirZ number
+---@param minX number box minimum bounds
+---@param minY number
+---@param minZ number
+---@param maxX number box maximum bounds
+---@param maxY number
+---@param maxZ number
+---@return boolean, number, number #hit, distance, depth
+function Rhodium.math.rayAABB(rayX, rayY, rayZ, rayDirX, rayDirY, rayDirZ, minX, minY, minZ, maxX, maxY, maxZ)
+    local t0X, t0Y, t0Z = (minX - rayX) / rayDirX, (minY - rayY) / rayDirY, (minZ - rayZ) / rayDirZ
+    local t1X, t1Y, t1Z = (maxX - rayX) / rayDirX, (maxY - rayY) / rayDirY, (maxZ - rayZ) / rayDirZ
+    local tminX, tminY, tminZ = math.min(t0X, t1X), math.min(t0Y, t1Y), math.min(t0Z, t1Z)
+    local tmaxX, tmaxY, tmaxZ = math.max(t0X, t1X), math.max(t0Y, t1Y), math.max(t0Z, t1Z)
+
+    local tNear = math.max(tminX, tminY, tminZ, 0.0)
+    local tFar = math.min(tmaxX, tmaxY, tmaxZ)
+
+    return tFar - tNear > 0, tNear, tFar - tNear
+end
+
+--- same as Rhodium.math.rayAABB but with 1 / rayDir instead of rayDir
+---@param rayX number
+---@param rayY number
+---@param rayZ number
+---@param rayIDirX number
+---@param rayIDirY number
+---@param rayIDirZ number
+---@param minX number box minimum bounds
+---@param minY number
+---@param minZ number
+---@param maxX number box maximum bounds
+---@param maxY number
+---@param maxZ number
+---@return boolean, number, number #hit, distance, depth
+function Rhodium.math.rayAABBInverse(rayX, rayY, rayZ, rayIDirX, rayIDirY, rayIDirZ, minX, minY, minZ, maxX, maxY, maxZ)
+    local t0X, t0Y, t0Z = (minX - rayX) * rayIDirX, (minY - rayY) * rayIDirY, (minZ - rayZ) * rayIDirZ
+    local t1X, t1Y, t1Z = (maxX - rayX) * rayIDirX, (maxY - rayY) * rayIDirY, (maxZ - rayZ) * rayIDirZ
+    local tminX, tminY, tminZ = math.min(t0X, t1X), math.min(t0Y, t1Y), math.min(t0Z, t1Z)
+    local tmaxX, tmaxY, tmaxZ = math.max(t0X, t1X), math.max(t0Y, t1Y), math.max(t0Z, t1Z)
+
+    local tNear = math.max(tminX, tminY, tminZ, 0.0)
+    local tFar = math.min(tmaxX, tmaxY, tmaxZ)
+
+    return tFar - tNear > 0, tNear, tFar - tNear
 end
 
 function Rhodium.math.triangleTangent(p1, p2, p3)
@@ -1600,6 +1735,12 @@ function Rhodium.math.newScaleMatrix(scale)
     mat[2][2] = scale.y
     mat[3][3] = scale.z
     return mat
+end
+
+function Rhodium.math.scaleFromMatrix(matrix)
+    return Rhodium.math.length3(matrix[1][1], matrix[1][2], matrix[1][3]),
+        Rhodium.math.length3(matrix[2][1], matrix[2][2], matrix[2][3]),
+        Rhodium.math.length3(matrix[3][1], matrix[3][2], matrix[3][3])
 end
 
 function Rhodium.math.slerp(qa, qb, t)
@@ -1649,39 +1790,8 @@ function Rhodium.math.newTransform(translation, rotation, scale)
     return rotationScaleMatrix
 end
 
-function Rhodium.math.newGLTFTransform(translation, rotation, scale)
-    local rx, ry, rz, rw = rotation:get()
-
-    local scaleMatrix = mat4({
-        { scale.x, 0,       0,       0 },
-        { 0,       scale.y, 0,       0 },
-        { 0,       0,       scale.z, 0 },
-        { 0,       0,       0,       1 }
-    })
-
-    local rotationMatrix = mat4 {
-        1 - 2 * (ry * ry + rz * rz), 2 * (rx * ry - rz * rw), 2 * (rx * rz + ry * rw), 0,
-        2 * (rx * ry + rz * rw), 1 - 2 * (rx * rx + rz * rz), 2 * (ry * rz - rx * rw), 0,
-        2 * (rx * rz - ry * rw), 2 * (ry * rz + rx * rw), 1 - 2 * (rx * rx + ry * ry), 0,
-        0, 0, 0, 1
-    }
-
-    -- since this rotation code is column major, we could transpose it but we don't need to
-    -- instead of rotationScaleMatrix = rotationMatrix * scaleMatrix we swap the order
-
-    local rotationScaleMatrix = scaleMatrix * rotationMatrix
-
-    rotationScaleMatrix[1][4] = translation.x
-    rotationScaleMatrix[2][4] = translation.y
-    rotationScaleMatrix[3][4] = translation.z
-
-    return rotationScaleMatrix
-end
-
-local gltfToRhodiumQuat
-
 function Rhodium.math.fromGLTFQuaternion(...)
-    local quat = quaternion(...)
+    local pitch, yaw, roll = Rhodium.math.quaternionToEuler(quaternion(...))
 
     --[[
         X- right, Y+ up, Z+ forward
@@ -1689,11 +1799,291 @@ function Rhodium.math.fromGLTFQuaternion(...)
         X+ right, Y+ up, Z- forward
     ]]
 
-    if not gltfToRhodiumQuat then
-        gltfToRhodiumQuat = quaternion(0, 0, 1, 0)
+    yaw = -yaw
+    roll = -roll
+
+    return Rhodium.math.eulerToQuaternion(pitch, yaw, roll)
+end
+
+function Rhodium.math.newGLTFTransform(translation, rotation, scale)
+    local scaleMatrix = mat4({
+        scale.x, 0, 0, 0,
+        0, scale.y, 0, 0,
+        0, 0, scale.z, 0,
+        0, 0, 0, 1
+    })
+
+    local rotationMatrix = Rhodium.math.quaternionToMatrix(Rhodium.math.fromGLTFQuaternion(rotation))
+
+    local translationMatrix = mat4()
+
+    --[[
+        X- right, Y+ up, Z+ forward
+        to
+        X+ right, Y+ up, Z- forward
+    ]]
+
+    translationMatrix[4][1] = translation.x
+    translationMatrix[4][2] = translation.y
+    translationMatrix[4][3] = -translation.z
+
+    return scaleMatrix * rotationMatrix * translationMatrix
+end
+
+local function rayTriangle(rayX, rayY, rayZ, rayDirX, rayDirY, rayDirZ, aX, aY, aZ, bX, bY, bZ, cX, cY, cZ)
+    local dot = Rhodium.math.dot
+    local cross = Rhodium.math.cross
+
+    local ABx = bX - aX
+    local ABy = bY - aY
+    local ABz = bZ - aZ
+
+    local ACx = cX - aX
+    local ACy = cY - aY
+    local ACz = cZ - aZ
+
+    local normalX, normalY, normalZ = cross(ABx, ABy, ABz, ACx, ACy, ACz)
+
+    local AOx = rayX - aX
+    local AOy = rayY - aY
+    local AOz = rayZ - aZ
+
+    local DAOx, DAOy, DAOz = cross(AOx, AOy, AOz, rayDirX, rayDirY, rayDirZ)
+
+    local det = -dot(rayDirX, rayDirY, rayDirZ, normalX, normalY, normalZ)
+    local invDet = 1 / det
+
+    local dist = dot(AOx, AOy, AOz, normalX, normalY, normalZ) * invDet
+    local u = dot(ACx, ACy, ACz, DAOx, DAOy, DAOz) * invDet
+    local v = -dot(ABx, ABy, ABz, DAOx, DAOy, DAOz) * invDet
+
+    local w = 1 - u - v
+    local hit = dist >= 0 and u >= 0 and v >= 0 and w >= 0
+
+    if hit then
+        local hitX = rayX + rayDirX * dist
+        local hitY = rayY + rayDirY * dist
+        local hitZ = rayZ + rayDirZ * dist
+
+        return dist, hitX, hitY, hitZ, u, v, w
+    end
+end
+
+function Rhodium.math.rayMesh(mesh, meshPosition, meshQuaternion, meshScale, position, direction)
+    local hitDistance = -1
+    local rayPosition = position - meshPosition
+
+    local rayHitX = 0
+    local rayHitY = 0
+    local rayHitZ = 0
+
+    local hitNormalX = 0
+    local hitNormalY = 0
+    local hitNormalZ = 0
+
+    local rayX, rayY, rayZ = rayPosition:get()
+    local qx, qy, qz, qw = meshQuaternion:get()
+
+    local sx, sy, sz = meshScale.x, meshScale.y, meshScale.z
+    local hit = false
+
+    local vertices = mesh.ffiVertices
+    for i = 0, mesh.vertices:getSize() / ffi.sizeof(mesh.ffiFormat) - 1, 3 do
+        local a, b, c = vertices[i], vertices[i + 1], vertices[i + 2]
+
+        local aX = a.VertexPosition.x * sx
+        local aY = a.VertexPosition.y * sy
+        local aZ = a.VertexPosition.z * sz
+
+        local bX = b.VertexPosition.x * sx
+        local bY = b.VertexPosition.y * sy
+        local bZ = b.VertexPosition.z * sz
+
+        local cX = c.VertexPosition.x * sx
+        local cY = c.VertexPosition.y * sy
+        local cZ = c.VertexPosition.z * sz
+
+        aX, aY, aZ = Rhodium.math.rotatePositionSeparate(aX, aY, aZ, qx, qy, qz, qw)
+        bX, bY, bZ = Rhodium.math.rotatePositionSeparate(bX, bY, bZ, qx, qy, qz, qw)
+        cX, cY, cZ = Rhodium.math.rotatePositionSeparate(cX, cY, cZ, qx, qy, qz, qw)
+
+        local minX, minY, minZ = math.min(aX, bX, cX), math.min(aY, bY, cY), math.min(aZ, bZ, cZ)
+        local maxX, maxY, maxZ = math.max(aX, bX, cX), math.max(aY, bY, cY), math.max(aZ, bZ, cZ)
+
+        if Rhodium.internal.rayAABB(minX, minY, minZ, maxX, maxY, maxZ, rayX, rayY, rayZ, direction.x, direction.y, direction.z) then
+            local dist, x, y, z, u, v, w = rayTriangle(
+                rayX, rayY, rayZ, direction.x, direction.y, direction.z, aX, aY, aZ, bX, bY, bZ, cX, cY, cZ)
+            if dist ~= nil and (dist < hitDistance or hitDistance < 0) then
+                hit = true
+                hitDistance = dist
+
+                rayHitX = x
+                rayHitY = y
+                rayHitZ = z
+
+                local normalX = a.VertexNormal.x * w + b.VertexNormal.x * u + c.VertexNormal.x * v
+                local normalY = a.VertexNormal.y * w + b.VertexNormal.y * u + c.VertexNormal.y * v
+                local normalZ = a.VertexNormal.z * w + b.VertexNormal.z * u + c.VertexNormal.z * v
+
+                hitNormalX, hitNormalY, hitNormalZ = Rhodium.math.rotatePositionSeparate(
+                    normalX, normalY, normalZ, qx, qy, qz, qw)
+            end
+        end
+    end
+    if hit then
+        return hitDistance, rayHitX + meshPosition.x, rayHitY + meshPosition.y, rayHitZ + meshPosition.z,
+            hitNormalX, hitNormalY, hitNormalZ
+    end
+end
+
+function Rhodium.math.rayPolygon(vertices, meshPosition, meshQuaternion, meshScale, position, direction)
+    local hitDistance = math.huge
+    local rayPosition = position - meshPosition
+
+    local rayHitX = 0
+    local rayHitY = 0
+    local rayHitZ = 0
+
+    local hitNormalX = 0
+    local hitNormalY = 0
+    local hitNormalZ = 0
+
+    local rayX, rayY, rayZ = rayPosition:get()
+    local qx, qy, qz, qw = meshQuaternion:get()
+
+    local sx, sy, sz = meshScale.x, meshScale.y, meshScale.z
+    local hit = false
+
+    for i = 1, #vertices, 3 do
+        local a, b, c = vertices[i], vertices[i + 1], vertices[i + 2]
+
+        local aX = a[1] * sx
+        local aY = a[2] * sy
+        local aZ = a[3] * sz
+
+        local bX = b[1] * sx
+        local bY = b[2] * sy
+        local bZ = b[3] * sz
+
+        local cX = c[1] * sx
+        local cY = c[2] * sy
+        local cZ = c[3] * sz
+
+        aX, aY, aZ = Rhodium.math.rotatePositionSeparate(aX, aY, aZ, qx, qy, qz, qw)
+        bX, bY, bZ = Rhodium.math.rotatePositionSeparate(bX, bY, bZ, qx, qy, qz, qw)
+        cX, cY, cZ = Rhodium.math.rotatePositionSeparate(cX, cY, cZ, qx, qy, qz, qw)
+
+        local minX, minY, minZ = math.min(aX, bX, cX), math.min(aY, bY, cY), math.min(aZ, bZ, cZ)
+        local maxX, maxY, maxZ = math.max(aX, bX, cX), math.max(aY, bY, cY), math.max(aZ, bZ, cZ)
+
+        -- if Rhodium.math.rayAABB(minX, minY, minZ, maxX, maxY, maxZ, rayX, rayY, rayZ, direction.x, direction.y, direction.z) then
+        local dist, x, y, z, u, v, w = rayTriangle(
+            rayX, rayY, rayZ, direction.x, direction.y, direction.z, aX, aY, aZ, bX, bY, bZ, cX, cY, cZ)
+        if dist ~= nil and dist < hitDistance then
+            hit = true
+            hitDistance = dist
+
+            rayHitX = x
+            rayHitY = y
+            rayHitZ = z
+
+            if a[6] then
+                local normalX = a[6] * w + b[6] * u + c[6] * v
+                local normalY = a[7] * w + b[7] * u + c[7] * v
+                local normalZ = a[8] * w + b[8] * u + c[8] * v
+
+                hitNormalX, hitNormalY, hitNormalZ = Rhodium.math.rotatePositionSeparate(
+                    normalX, normalY, normalZ, qx, qy, qz, qw)
+            end
+        end
+        -- end
+    end
+    if hit then
+        return hitDistance, rayHitX + meshPosition.x, rayHitY + meshPosition.y, rayHitZ + meshPosition.z,
+            hitNormalX, hitNormalY, hitNormalZ
+    end
+end
+
+do
+    local curGain, curOctaves, curLacunarity, curFrequency
+    function Rhodium.math.setFBMNoiseSettings(gain, octaves, lacunarity, frequency)
+        curGain = gain
+        curOctaves = octaves
+        curLacunarity = lacunarity
+        curFrequency = frequency
     end
 
-    quat = quat * gltfToRhodiumQuat
+    function Rhodium.math.fbmNoise1(x)
+        local value = 0.0
+        local amplitude = 1.0 - curGain ^ curOctaves / (1.0 - curGain)
+        local frequency = curFrequency
 
-    return quat
+        for i = 1, curOctaves do
+            value = value + love.math.simplexNoise(x * frequency) * amplitude
+
+            frequency = frequency * curLacunarity
+            amplitude = amplitude * curGain
+        end
+
+        return value
+    end
+
+    function Rhodium.math.fbmNoise2(x, y)
+        local value = 0.0
+        local amplitude = 1.0 - curGain ^ curOctaves / (1.0 - curGain)
+        local frequency = curFrequency
+
+        for i = 1, curOctaves do
+            value = value + love.math.simplexNoise(x * frequency, y * frequency) * amplitude
+
+            frequency = frequency * curLacunarity
+            amplitude = amplitude * curGain
+        end
+
+        return value
+    end
+
+    function Rhodium.math.fbmNoise3(x, y, z)
+        local value = 0.0
+        local amplitude = 1.0 - curGain ^ curOctaves / (1.0 - curGain)
+        local frequency = curFrequency
+
+        for i = 1, curOctaves do
+            value = value + love.math.simplexNoise(x * frequency, y * frequency, z * frequency) * amplitude
+
+            frequency = frequency * curLacunarity
+            amplitude = amplitude * curGain
+        end
+
+        return value
+    end
+
+    function Rhodium.math.fbmNoise4(x, y, z, w)
+        local value = 0.0
+        local amplitude = 1.0 - curGain ^ curOctaves / (1.0 - curGain)
+        local frequency = curFrequency
+
+        for i = 1, curOctaves do
+            value = value +
+                love.math.simplexNoise(x * frequency, y * frequency, z * frequency, w * frequency) * amplitude
+
+            frequency = frequency * curLacunarity
+            amplitude = amplitude * curGain
+        end
+
+        return value
+    end
+end
+
+function Rhodium.math.calculateCameraMatrix()
+    Camera.rotationMatrix = Rhodium.math.eulerToMatrix(
+        -Camera.pitch,
+        -Camera.yaw,
+        -Camera.roll
+    )
+
+    Camera.viewMatrix = Rhodium.math.newTranslationMatrix(-Camera.position) * Camera.rotationMatrix
+    Camera.viewProjectionMatrix = Camera.viewMatrix * Camera.projectionMatrix
+
+    return Camera.viewProjectionMatrix
 end

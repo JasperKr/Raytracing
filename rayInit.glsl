@@ -72,11 +72,9 @@ void computemain() {
 
     vec3 randomDirection = RandomHemisphereDirection(rayDirection, rngState);
 
-    const float jitterAmount = 0.002;
+    const float jitterAmount = 0.001;
 
-    rayDirection = normalize(mix(rayDirection, randomDirection, jitterAmount));
-
-    RayInfo rayInfo = RayInfo(CameraPosition, rayDirection, vec3(1.0), vec3(0.0));
+    RayInfo rayInfo = RayInfo(CameraPosition + randomDirection * jitterAmount, rayDirection, vec3(1.0), vec3(0.0));
 
     rayInfos[pixelIndex] = rayInfo;
 }

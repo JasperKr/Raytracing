@@ -44,5 +44,5 @@ void computemain() {
 
     highp vec3 previousColor = imageLoad(CurrentFrame, ivec2(screen_coords)).rgb;
 
-    imageStore(CurrentFrame, ivec2(screen_coords), vec4(mix(previousColor, rayInfo.incomingLight * Exposure, contribution), 1.0));
+    imageStore(CurrentFrame, ivec2(screen_coords), vec4(mix(previousColor, rayInfo.incomingLight, contribution), 1.0));
 }

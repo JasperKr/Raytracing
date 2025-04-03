@@ -1,3 +1,5 @@
+MAX_DEPTH = 22
+
 function love.load()
     ffi = require("ffi")
     Rhodium = {
@@ -47,8 +49,6 @@ function love.load()
     Camera.previousInverseViewProjectionMatrix = Camera.inverseViewProjectionMatrix
     Camera.previousInverseViewMatrix = Camera.inverseViewMatrix
 
-    MAX_DEPTH = 28
-
     Shaders = {
         rayTrace = Rhodium.graphics.newComputeShader("rayTrace.glsl"),
         rayInit = Rhodium.graphics.newComputeShader("rayInit.glsl"),
@@ -57,6 +57,7 @@ function love.load()
 
     Skybox = love.graphics.newCubeImage("skybox.exr", { linear = true })
 
+    love.window.setVSync(0)
     Shaders.rayTrace:send("Skybox", Skybox)
 
     love.mouse.setRelativeMode(true)
@@ -65,9 +66,9 @@ function love.load()
         { format = "rgba32f", computewrite = true, canvas = true })
 
     local materialformat = {
-        { name = "albedo",          format = "int32vec2" }, -- 10r, 10g, 10b, dummy
-        { name = "material",        format = "int32vec2" }, --16r, 16g, 16b, 8roughness, 8metallic
-        { name = "materialIndices", format = "int32vec2" }, -- 16 albedo, 16 emissive, 16 normal, 16 material
+        { name = "albedo",          format = "int32vec2", location = 0 }, -- 10r, 10g, 10b, dummy
+        { name = "material",        format = "int32vec2", location = 1 }, --16r, 16g, 16b, 8roughness, 8metallic
+        { name = "materialIndices", format = "int32vec2", location = 2 }, -- 16 albedo, 16 emissive, 16 normal, 16 material
     }
 
     print("Loading meshes...")
@@ -75,7 +76,19 @@ function love.load()
     -- local meshes = Rhodium.graphics.loadGltfFile("Tree/jacaranda_tree_2k.gltf")
     -- local meshes = Rhodium.graphics.loadGltfFile("car.glb")
     local meshes = Rhodium.graphics.loadGltfFile("sponza_with_light.glb")
-    -- local meshes = Rhodium.graphics.loadGltfFile("sponza.glb")
+
+    -- love.filesystem.mountFullPath("C:\\Coding\\LOVE\\Rhodium\\Assets\\Tests", "Model",
+    -- "read",
+    -- true)
+    -- local meshes = Rhodium.graphics.loadGltfFile("Model/sponza_with_suzanne.glb")
+    -- love.filesystem.mountFullPath("C:\\Coding\\LOVE\\Rhodium\\Assets\\Objects\\Soldier", "Model", "read", true)
+    -- local meshes = Rhodium.graphics.loadGltfFile("Model/soldier.glb")
+
+    -- love.filesystem.mountFullPath("C:\\Coding\\LOVE\\Rhodium\\Assets\\Terrain", "Model",
+    -- "read",
+    -- true)
+    -- local meshes = Rhodium.graphics.loadGltfFile("Model/Sponza.glb")
+
 
     local triangles = {}
 
@@ -87,10 +100,10 @@ function love.load()
     local rayCount = width * height
 
     local rayBufferFormat = {
-        { name = "origin",        format = "floatvec3" },
-        { name = "direction",     format = "floatvec3" },
-        { name = "color",         format = "floatvec3" },
-        { name = "incomingLight", format = "floatvec3" },
+        { name = "origin",        format = "floatvec3", location = 0 },
+        { name = "direction",     format = "floatvec3", location = 1 },
+        { name = "color",         format = "floatvec3", location = 2 },
+        { name = "incomingLight", format = "floatvec3", location = 3 },
     }
 
     RayBuffer = newBuffer(rayBufferFormat, rayCount, { shaderstorage = true, usage = "dynamic" })
@@ -106,6 +119,18 @@ function love.load()
         ---@type love.ByteData, love.ByteData
         local meshVertices, meshIndices = mesh.vertices, mesh.indices
 
+        local uvKey
+
+        print("Mesh " .. j .. ": " .. tostring(mesh.name))
+        for i, format in ipairs(mesh.vertexformat) do
+            if format.name == "VertexTexCoord" then
+                uvKey = "VertexTexCoord"
+            end
+            if format.name == "VertexTexCoord_0" then
+                uvKey = "VertexTexCoord_0"
+            end
+        end
+
         local vertexCount = meshVertices:getSize() / ffi.sizeof(mesh.ffiVertexFormat)
         local indexFormat = mesh.CIndicesType .. "_t"
         local indexCount = meshIndices:getSize() / ffi.sizeof(indexFormat)
@@ -119,7 +144,10 @@ function love.load()
             local vertex = ffiVertices[i - 1]
             local position = vertex.VertexPosition
             local normal = vertex.VertexNormal
-            local uv = vertex.VertexTexCoord_0
+            local uv
+            if uvKey then
+                uv = vertex[uvKey]
+            end
 
             local x, y, z = rotatePositionSeparate(tonumber(position.x), tonumber(position.y), tonumber(position.z),
                 mesh.rotation.x, mesh.rotation.y, mesh.rotation.z, mesh.rotation.w)
@@ -131,8 +159,8 @@ function love.load()
                 x * mesh.scale.x * scale + mesh.position.x,
                 y * mesh.scale.y * scale + mesh.position.y,
                 z * mesh.scale.z * scale + mesh.position.z,
-                uv.x,
-                uv.y,
+                uv and uv.x or 0,
+                uv and uv.y or 0,
                 nx,
                 ny,
                 nz
@@ -171,9 +199,9 @@ function love.load()
 
     print("Preparing materials...")
 
-    local function encodeMaterial(albedo, emissive, roughness, metallic, albedoIndex, emissiveIndex, nomralIndex,
+    local function encodeMaterial(albedo, emissive, roughness, metallic, albedoIndex, emissiveIndex, normalIndex,
                                   materialIndex)
-        local encAlbedo = Rhodium.internal.encodeUnormVec3Int32(albedo[1], albedo[2], albedo[3])
+        local encAlbedo = Rhodium.math.encodeUnorm4x8(albedo[1], albedo[2], albedo[3], albedo[4])
         local encEmissiveX = Rhodium.math.float32to16uint32(emissive[1])
         local encEmissiveY = Rhodium.math.float32to16uint32(emissive[2])
         local encEmissiveZ = Rhodium.math.float32to16uint32(emissive[3])
@@ -185,8 +213,8 @@ function love.load()
             return math.min(math.max(x, 0), 65535)
         end
 
-        local matA = clamp16(albedoIndex) + bit.lshift(clamp16(emissiveIndex), 16)
-        local matB = clamp16(nomralIndex) + bit.lshift(clamp16(materialIndex), 16)
+        local matA = clamp16(albedoIndex + 1) + bit.lshift(clamp16(emissiveIndex + 1), 16)
+        local matB = clamp16(normalIndex + 1) + bit.lshift(clamp16(materialIndex + 1), 16)
 
         return encAlbedo, 0, encEmissiveA, encEmissiveB, matA, matB
     end
@@ -231,7 +259,7 @@ function love.load()
 
         materialsBuffer:writeMany(
             encodeMaterial(
-                { uniforms.baseColor[1], uniforms.baseColor[2], uniforms.baseColor[3] },
+                { uniforms.baseColor[1], uniforms.baseColor[2], uniforms.baseColor[3], uniforms.baseColor[4] or 1.0 },
                 { uniforms.emissiveFactor[1], uniforms.emissiveFactor[2], uniforms.emissiveFactor[3] },
                 uniforms.roughness or 0.5,
                 uniforms.metalness or 0.5,
@@ -285,10 +313,10 @@ function love.load()
     for i = 1, 9 do table.insert(trianglePositionFormat, { name = "pos" .. i, format = "float" }) end
 
     local triangleDataFormat = {
-        { name = "UVs",           format = "uint32vec3" },
-        { name = "materialIndex", format = "uint32" },
-        { name = "normals",       format = "int32vec3" },
-        { name = "padding",       format = "int32" },
+        { name = "UVs",           format = "uint32vec3", location = 0 },
+        { name = "materialIndex", format = "uint32",     location = 1 },
+        { name = "normals",       format = "int32vec3",  location = 2 },
+        { name = "padding",       format = "int32",      location = 3 },
     }
 
     print("Preparing triangle data buffers...")
@@ -298,9 +326,6 @@ function love.load()
 
     local triangleDataBuffer = newBuffer(
         triangleDataFormat, triangleCount, { vertex = true, shaderstorage = true, usage = "static" })
-
-    print(trianglePositionBuffer:getBuffer():getElementStride())
-    print(triangleDataBuffer:getBuffer():getElementStride())
 
     for i = 1, triangleCount do
         local triangle = triangles[i]
@@ -570,7 +595,6 @@ function write()
     local sx, sy, sz = Shaders.rayWrite:getLocalThreadgroupSize()
     Shaders.rayWrite:send("FrameIndex", Frame)
     Shaders.rayWrite:send("ScreenSize", { love.graphics.getDimensions() })
-    Shaders.rayWrite:send("Exposure", Exposure)
 
     local iW, iH = love.graphics.getDimensions()
     local x, y = math.ceil(iW / sx), math.ceil(iH / sy)
@@ -623,7 +647,7 @@ function love.mousemoved(x, y, dx, dy)
         Updated = true
 
         Camera.yaw = Camera.yaw + dx * 0.004
-        Camera.pitch = Rhodium.math.clamp(Camera.pitch + dy * 0.004, -PI05, PI05)
+        Camera.pitch = Rhodium.math.clamp(Camera.pitch + dy * 0.004, -Rhodium.math.PI05, Rhodium.math.PI05)
     end
 end
 

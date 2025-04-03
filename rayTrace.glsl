@@ -2,8 +2,6 @@
 
 layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-#extension GL_NV_ray_tracing : require 
-
 #define SKIP_VIEW_Z 1
 #define SKIP_GET_POSITION_DATA 1
 
@@ -133,7 +131,7 @@ float RandomValue(inout uint state) {
     return float(result) / 4294967295.0;
 }
 
-float fastSqrt(float x) {
+float FastSqrt(float x) {
     return intBitsToFloat(0x1fbd1df5 + (floatBitsToInt(x) >> 1));
 }
 
@@ -148,7 +146,7 @@ float RandomNormalDistributionValue(inout uint state) {
     result = (result >> 22u) ^ result;
     float t = float(result) * RndToRad;
 
-    float r = fastSqrt(-2.0 * fastLog(RandomValue(state)));
+    float r = FastSqrt(-2.0 * fastLog(RandomValue(state)));
     return r * cos(t);
 }
 
@@ -199,9 +197,17 @@ vec3 rayTriangle(Ray ray, uint triIndex) {
     return vec3(mix(-1.0, dist, hit), u, v);
 }
 
-#define MAX_DEPTH 28
+void GetNodeBounds(uvec3 data, inout vec3 min, inout vec3 max) {
+    vec2 a = unpackHalf2x16(data.x);
+    vec2 b = unpackHalf2x16(data.y);
+    min = vec3(a.xy, b.x);
+    vec2 c = unpackHalf2x16(data.z);
+    max = vec3(b.y, c.xy);
+}
 
-vec3 RayTriangleBVH(Ray ray, out uint closestTriIndex)
+#define MAX_DEPTH 32
+
+vec3 RayTriangleBVH(Ray ray, out uint closestTriIndex, out bool frontFacing)
 {
     uint stack[MAX_DEPTH];
     int stackIndex = 0;
@@ -216,16 +222,20 @@ vec3 RayTriangleBVH(Ray ray, out uint closestTriIndex)
     while (stackIndex > 0 && maxIter--> 0 && stackIndex < MAX_DEPTH)
     {
         BVHNode node = nodes[stack[--stackIndex]];
-        bool isLeaf = node.TriangleCount > 0u;
+
+        uint triangleStart = node.TriangleStart;
+        uint triangleCount = node.TriangleCount;
+
+        bool isLeaf = triangleCount > 0u;
 
         if (isLeaf)
         {
-            for (uint i = 0u; i < node.TriangleCount; i++)
+            for (uint i = 0u; i < triangleCount; i++)
             {
                 // vec3 distData = rayTriangle(ray, node.TriangleStart + i);
 
                 ////////////////////// ray-triangle intersection //////////////////////
-                PackedTriangle triangle = triangles[node.TriangleStart + i];
+                PackedTriangle triangle = triangles[triangleStart + i];
 
                 vec3 A = vec3(triangle.data0, triangle.data1, triangle.data2);
                 vec3 AB = vec3(triangle.data3, triangle.data4, triangle.data5) - A;
@@ -247,19 +257,23 @@ vec3 RayTriangleBVH(Ray ray, out uint closestTriIndex)
                 if (hit && dist < closestDistData.x)
                 {
                     closestDistData = vec3(dist, u, v);
-                    closestTriIndex = node.TriangleStart + i;
+                    closestTriIndex = triangleStart + i;
+
+                    frontFacing = dot(ray.direction, normal) < 0.0;
                 }
             }
         }
         else
         {
-            uint childIndexA = node.TriangleStart;
-            uint childIndexB = node.TriangleStart + 1u;
+            uint childIndexA = triangleStart;
             BVHNode childA = nodes[childIndexA];
 
             ////////////////////// ray-box intersection //////////////////////
-            vec3 tMinA = (childA.Min - ray.origin) * ray.invDirection;
-            vec3 tMaxA = (childA.Max - ray.origin) * ray.invDirection;
+            vec3 Min = childA.Min;
+            vec3 Max = childA.Max;
+
+            vec3 tMinA = (Min - ray.origin) * ray.invDirection;
+            vec3 tMaxA = (Max - ray.origin) * ray.invDirection;
 
             vec3 t1A = min(tMinA, tMaxA);
             float tNearA = max(max(t1A.x, t1A.y), t1A.z);
@@ -269,13 +283,14 @@ vec3 RayTriangleBVH(Ray ray, out uint closestTriIndex)
 
             float dstA = max(mix(1E7, tNearA, tFarA >= tNearA && tFarA > 0.0), 0.0);
 
-            // float dstA = rayBoxDistance(childA.Min, childA.Max, ray);
-
-            BVHNode childB = nodes[childIndexB];
+            BVHNode childB = nodes[childIndexA + 1u];
 
             ////////////////////// ray-box intersection //////////////////////
-            vec3 tMinB = (childB.Min - ray.origin) * ray.invDirection;
-            vec3 tMaxB = (childB.Max - ray.origin) * ray.invDirection;
+            Min = childB.Min;
+            Max = childB.Max;
+
+            vec3 tMinB = (Min - ray.origin) * ray.invDirection;
+            vec3 tMaxB = (Max - ray.origin) * ray.invDirection;
 
             vec3 t1B = min(tMinB, tMaxB);
             float tNearB = max(max(t1B.x, t1B.y), t1B.z);
@@ -284,14 +299,13 @@ vec3 RayTriangleBVH(Ray ray, out uint closestTriIndex)
             float tFarB = min(min(t2B.x, t2B.y), t2B.z);
 
             float dstB = max(mix(1E7, tNearB, tFarB >= tNearB && tFarB > 0.0), 0.0);
-            // float dstB = rayBoxDistance(childB.Min, childB.Max, ray);
             
             // We want to look at closest child node first, so push it last
             bool isNearestA = dstA <= dstB;
             float dstNear = isNearestA ? dstA : dstB;
             float dstFar = isNearestA ? dstB : dstA;
-            uint childIndexNear = isNearestA ? childIndexA : childIndexB;
-            uint childIndexFar = isNearestA ? childIndexB : childIndexA;
+            uint childIndexNear = isNearestA ? childIndexA : childIndexA + 1u;
+            uint childIndexFar = isNearestA ? childIndexA + 1u : childIndexA;
 
             if (dstFar < closestDistData.x) stack[stackIndex++] = childIndexFar;
             if (dstNear < closestDistData.x) stack[stackIndex++] = childIndexNear;
@@ -299,6 +313,60 @@ vec3 RayTriangleBVH(Ray ray, out uint closestTriIndex)
     }
 
     return closestDistData;
+}
+
+// https://jcgt.org/published/0007/04/01/paper.pdf
+vec3 sampleGGXVNDF(vec3 Ve, float alpha_x, float alpha_y, float U1, float U2) {
+    // Section 3.2: transforming the view direction to the hemisphere configuration
+    vec3 Vh = normalize(vec3(alpha_x * Ve.x, alpha_y * Ve.y, Ve.z));
+    // Section 4.1: orthonormal basis (with special case if cross product is zero)
+    float lensq = Vh.x * Vh.x + Vh.y * Vh.y;
+    vec3 T1 = lensq > 0.0 ? vec3(-Vh.y, Vh.x, 0.0) * inversesqrt(lensq) : vec3(1.0, 0.0, 0.0);
+    vec3 T2 = cross(Vh, T1);
+    // Section 4.2: parameterization of the projected area
+    float r = FastSqrt(U1);
+    float phi = 2.0 * PI * U2;
+    float t1 = r * cos(phi);
+    float t2 = r * sin(phi);
+    float s = 0.5 * (1.0 + Vh.z);
+    t2 = (1.0 - s) * FastSqrt(1.0 - t1 * t1) + s * t2;
+    // Section 4.3: reprojection onto hemisphere
+    vec3 Nh = t1 * T1 + t2 * T2 + FastSqrt(max(0.0, 1.0 - t1 * t1 - t2 * t2)) * Vh;
+    // Section 3.4: transforming the normal back to the ellipsoid configuration
+    vec3 Ne = normalize(vec3(alpha_x * Nh.x, alpha_y * Nh.y, max(0.0, Nh.z)));
+    return Ne;
+}
+
+vec3 calculateMicrofacetNormal(vec3 normal, float perceptualRoughness, vec3 rayDirection, inout uint rnd)
+{
+    rayDirection = -rayDirection;
+    vec3 surfaceNormal = normal;
+
+    float U1 = RandomValue(rnd);
+    float U2 = RandomValue(rnd);
+
+    vec3 tangent = normalize(abs(normal.z) < 0.999 ? cross(normal, vec3(0.0, 0.0, 1.0)) : cross(normal, vec3(0.0, 1.0, 0.0)));
+    vec3 bitangent = cross(normal, tangent);
+
+    vec3 tangentRayDirection = vec3(dot(rayDirection, tangent), dot(rayDirection, bitangent), dot(rayDirection, normal));
+
+    float alpha = perceptualRoughness * perceptualRoughness;
+    vec3 sampledNormal = sampleGGXVNDF(tangentRayDirection, alpha, alpha, U1, U2);
+
+    // from tangent-space vector to world-space sample vector
+    vec3 microfacetNormal = normalize(
+        tangent * sampledNormal.x +
+        bitangent * sampledNormal.y +
+        normal * sampledNormal.z
+    );
+
+    return microfacetNormal;
+}
+
+float reflectance(float cosTheta, float ri) {
+    float r0 = (1.0 - ri) / (1.0 + ri);
+    r0 = r0 * r0;
+    return r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
 }
 
 uniform mediump samplerCube Skybox;
@@ -320,9 +388,12 @@ void traceRay(inout RayInfo ray, inout uint state) {
 
     uint triangleIndex;
 
+    ray.direction = normalize(ray.direction);
+
     Ray rayData = Ray(ray.origin, ray.direction, 1.0 / ray.direction);
 
-    vec3 distData = RayTriangleBVH(rayData, triangleIndex);
+    bool frontFacing;
+    vec3 distData = RayTriangleBVH(rayData, triangleIndex, frontFacing);
 
     if (distData.x >= 1E6) {
         ray.incomingLight += ray.color * sampleSkybox(rayData);
@@ -330,17 +401,17 @@ void traceRay(inout RayInfo ray, inout uint state) {
         return;
     }
 
-    if (exp(-GlobalFogDensity * distData.x) < RandomValue(state))
-    {
-        ray.color *= GlobalFogColor;
+    // if (exp(-GlobalFogDensity * distData.x) < RandomValue(state))
+    // {
+    //     ray.color *= GlobalFogColor;
 
-        distData.x *= RandomValue(state);
-        ray.origin += ray.direction * distData.x;
+    //     distData.x *= RandomValue(state);
+    //     ray.origin += ray.direction * distData.x;
 
-        ray.direction = RandomDirection(state);
+    //     ray.direction = RandomDirection(state);
 
-        return;
-    }
+    //     return;
+    // }
 
     float u = distData.y;
     float v = distData.z;
@@ -354,56 +425,102 @@ void traceRay(inout RayInfo ray, inout uint state) {
     vec3 normal = UnpackNormalInt32(triangle.normals.x) * w + UnpackNormalInt32(triangle.normals.y) * u + UnpackNormalInt32(triangle.normals.z) * v;
     vec2 uv = w * unpackHalf2x16(triangle.UVs.x) + u * unpackHalf2x16(triangle.UVs.y) + v * unpackHalf2x16(triangle.UVs.z);
 
+    if (!frontFacing)
+    {
+        normal = -normal;
+    }
+
     // Material data
 
     Material material = materials[materialIndex];
 
     ivec4 indices = UnpackInt16Vec4Int32vec2(material.materialIndices);
 
-    vec3 albedo = UnpackUnormVec3Int32(material.albedo.x);
-    if (indices.x >= 0)
+    vec4 albedo = unpackUnorm4x8(material.albedo.x);
+    if (indices.x - 1 >= 0)
     {
-        vec2 scale = albedoScales[indices.x].scale;
-        albedo = texture(AlbedoTexture, vec3(uv * scale, indices.x)).rgb;
+        vec2 scale = albedoScales[indices.x - 1].scale;
+        albedo *= texture(AlbedoTexture, vec3(uv * scale, indices.x - 1));
+    }
+
+    if (albedo.a <= 0.5 || length(albedo.rgb) == 0.0) // alpha test
+    {
+        ray.origin += ray.direction * 0.0004;
+        return;
     }
     
     vec3 emissive = vec3(unpackHalf2x16(material.material.x), unpackHalf2x16(material.material.y).x);
-    if (indices.y >= 0)
+    if (indices.y - 1 >= 0)
     {
-        vec2 scale = emissiveScales[indices.y].scale;
-        emissive *= texture(EmissiveTexture, vec3(uv * scale, indices.y)).rgb;
+        vec2 scale = emissiveScales[indices.y - 1].scale;
+        emissive *= texture(EmissiveTexture, vec3(uv * scale, indices.y - 1)).rgb;
     }
 
     // material.material.y: 16emmisive.b, 8roughness unorm8, 8metallic unorm8
     float perceptualRoughness = (material.material.y >> 16) & 0xFF;
     float metallic = (material.material.y >> 24) & 0xFF;
-    if (indices.w >= 0)
+    if (indices.w - 1 >= 0)
     {
-        vec2 scale = metallicRoughnessScales[indices.w].scale;
-        vec2 data = texture(MetallicRoughnessTexture, vec3(uv * scale, indices.w)).gb;
+        vec2 scale = metallicRoughnessScales[indices.w - 1].scale;
+        vec2 data = texture(MetallicRoughnessTexture, vec3(uv * scale, indices.w - 1)).gb;
         perceptualRoughness = max(MIN_PERCEPTUAL_ROUGHNESS, data.x);
         metallic = data.y;
     }
+
+    perceptualRoughness *= 0.0;
 
     // Material data
 
     ray.incomingLight += emissive * ray.color;
 
-    float roughness = perceptualRoughness * perceptualRoughness;
-    
-    if (RandomValue(state) > metallic)
+    vec3 microfacetNormal = calculateMicrofacetNormal(normal, perceptualRoughness, ray.direction, state);
+
+    vec3 reflected = reflect(ray.direction, microfacetNormal);
+
+    if (dot(-reflected, normal) < 0.0)
     {
-        ray.direction = RandomHemisphereDirection(normal, state);
+        reflected = reflect(ray.direction, normal);
+    }
+
+    if (RandomValue(state) < albedo.a)
+    {
+        if (RandomValue(state) < metallic)
+        {
+            ray.direction = reflected;
+        }
+        else
+        {
+            ray.direction = RandomHemisphereDirection(normal, state);
+        }
+
+        ray.color *= albedo.rgb;
     }
     else
     {
-        vec3 specularDirection = reflect(ray.direction, normal);
-        ray.direction = mix(specularDirection, RandomHemisphereDirection(specularDirection, state), roughness);
-        ray.direction *= sign(dot(ray.direction, normal));
-        ray.direction = normalize(ray.direction);
-    }
+        const float RefrectionIndex = 1.2;
 
-    ray.color *= albedo;
+        float cosTheta = abs(dot(-ray.direction, normal));
+        float eta = frontFacing ? 1.0 / RefrectionIndex : RefrectionIndex;
+
+        float sin2ThetaT = (1.0 - cosTheta * cosTheta) * eta * eta;
+
+        bool canRefract = sin2ThetaT < 1.0;
+
+        if (!canRefract || reflectance(cosTheta, eta) > RandomValue(state))
+        {
+            ray.direction = reflected;
+        }
+        else
+        {
+            ray.origin += ray.direction * 0.0004;
+            float cosThetaT = sqrt(1.0 - sin2ThetaT);
+            
+            ray.direction = eta * ray.direction + (eta * cosTheta - cosThetaT) * normal;
+        }
+        
+        ray.color *= albedo.rgb;
+    }
+    
 }
 
 uniform highp uint RandomIndex;
@@ -414,10 +531,10 @@ void computemain() {
 
     RayInfo rayInfo = rayInfos[pixelIndex];
 
-    // if (max(max(rayInfo.color.r, rayInfo.color.g), rayInfo.color.b) < 0.001)
-    // {
-    //     return;
-    // }
+    if (max(max(rayInfo.color.r, rayInfo.color.g), rayInfo.color.b) == 0.0)
+    {
+        return;
+    }
 
     traceRay(rayInfo, rngState);
 

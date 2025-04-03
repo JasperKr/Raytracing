@@ -14,14 +14,14 @@ local function getNodeTransform(node)
     -- if the node has a matrix, use it
     if node.matrix then
         -- the matrix is stored as a table, so we need to unpack it
-        nodeMatrix = mat4(unpack(node.matrix))
+        nodeMatrix = mat4(unpack(node.matrix)):transpose()
 
         -- translation
         local translation = vec3(nodeMatrix[4][1], nodeMatrix[4][2], nodeMatrix[4][3])
 
         -- rotation, but i'm not sure if this is correct
         -- since the matrix is for a different coordinate system
-        local rotation = Rhodium.math.matrixToQuaternion(nodeMatrix):normalize()
+        local rotation = Rhodium.math.matrixToQuaternion(nodeMatrix):normalize():invert()
 
         -- scale
         local scale = vec3(
@@ -30,16 +30,19 @@ local function getNodeTransform(node)
             Rhodium.math.length3(nodeMatrix[3][1], nodeMatrix[3][2], nodeMatrix[3][3])
         )
 
-        nodeMatrix = Rhodium.math.newGLTFTransform(
+        nodeMatrix = Rhodium.math.newTransform(
             translation,
             rotation,
             scale)
     else
         local translation = node.translation and vec3(node.translation) or vec3()
         local rotation = node.rotation and quaternion(node.rotation) or quaternion()
+
+        rotation = rotation:invert()
+
         local scale = node.scale and vec3(node.scale) or vec3(1.0)
 
-        nodeMatrix = Rhodium.math.newGLTFTransform(
+        nodeMatrix = Rhodium.math.newTransform(
             translation,
             rotation,
             scale
@@ -277,7 +280,7 @@ local function loadGltfFile(filepath)
 
     local animation = nil
     if #data.animations > 0 then
-        animation = Rhodium.animation.loadAnimation(data)
+        -- animation = Rhodium.animation.loadAnimation(data)
     end
 
     local meshToNode, lightToNode, childToParent = processNodes(data)

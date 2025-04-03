@@ -5,15 +5,15 @@ function love.conf(t)
     t.console = false                   -- Attach a console (boolean, Windows only)
     t.accelerometerjoystick = true      -- Enable the accelerometer on iOS and Android by exposing it as a Joystick (boolean)
     t.externalstorage = false           -- true to save files in external storage on Android (boolean)
-    t.gammacorrect = true               -- Enable gamma-correct rendering, when supported by the system (boolean)
+    t.graphics.gammacorrect = true      -- Enable gamma-correct rendering, when supported by the system (boolean)
 
     t.audio.mic = false                 -- Request and use microphone capabilities in Android (boolean)
     t.audio.mixwithsystem = true        -- Keep background music playing when opening LOVE (boolean, iOS and Android only)
 
     t.window.title = "Raytracer"        -- The window title (string)
     t.window.icon = nil                 -- Filepath to an image to use as the window's icon (string)
-    t.window.width = 1600               -- The window width (number)
-    t.window.height = 1000              -- The window height (number)
+    t.window.width = 1920               -- The window width (number)
+    t.window.height = 1080              -- The window height (number)
     t.window.borderless = false         -- Remove all border visuals from the window (boolean)
     t.window.resizable = false          -- Let the window be user-resizable (boolean)
     t.window.minwidth = 1               -- Minimum window width if the window is resizable (number)
@@ -22,7 +22,7 @@ function love.conf(t)
     t.window.fullscreentype = "desktop" -- Choose between "desktop" fullscreen or "exclusive" fullscreen mode (string)
     t.window.vsync = 0                  -- Vertical sync mode (number)
     t.window.msaa = 0                   -- The number of samples to use with multi-sampled antialiasing (number)
-    t.window.depth = true               -- The number of bits per sample in the depth buffer
+    t.window.depth = false              -- The number of bits per sample in the depth buffer
     t.window.stencil = nil              -- The number of bits per sample in the stencil buffer
     t.highdpi = false                   -- Enable high-dpi mode for the window on a Retina display (boolean)
     t.window.usedpiscale = true         -- Enable automatic DPI scaling when highdpi is set to true as well (boolean)
@@ -48,5 +48,5 @@ function love.conf(t)
     t.modules.video = true              -- Enable the video module (boolean)
     t.modules.window = true             -- Enable the window module (boolean)
 
-    t.renderers = { 'vulkan' }
+    t.graphics.renderers = { 'vulkan' }
 end

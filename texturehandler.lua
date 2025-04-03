@@ -22,7 +22,7 @@ function newTextureGroup(textures, settings)
     end
 
     local bufferFormat = {
-        { name = "scale", format = "floatvec2" }
+        { name = "scale", format = "floatvec2", location = 0 }
     }
     local buffer = newBuffer(bufferFormat, #textures, { shaderstorage = true, usage = "static" })
     buffer:write(scales):flush()

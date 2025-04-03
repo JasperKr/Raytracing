@@ -1,24 +1,29 @@
 local bvhFormat = {
-    { name = "Min",           format = "floatvec3" },
-    { name = "Max",           format = "floatvec3" },
-    { name = "TriangleStart", format = "uint32" },
-    { name = "TriangleCount", format = "uint32" },
+    { name = "Min",           format = "floatvec3", location = 0 },
+    { name = "Max",           format = "floatvec3", location = 1 },
+    { name = "TriangleStart", format = "uint32",    location = 2 },
+    { name = "TriangleCount", format = "uint32",    location = 3 }
 }
 
 BvhBuffer = newBuffer(bvhFormat, 1, { shaderstorage = true, usage = "static" })
 
-local nodes = {}
+local nodes
 
 ffi.cdef [[
     typedef struct {
-        double x, y, z;
-    } doublevec3;
+        float x, y, z;
+    } floatvec3;
 
     typedef struct {
-        doublevec3 min;
-        doublevec3 max;
+        floatvec3 min;
+        floatvec3 max;
     } bounds;
 
+    typedef struct {
+        bounds* bounds;
+        int64_t start;
+        int64_t count;
+    } node;
 ]]
 
 ---@class BvhNode
@@ -26,17 +31,35 @@ ffi.cdef [[
 ---@field start number
 ---@field count number
 
---- Creates a new BVH node
---- @param bounds bounds
---- @param start number
---- @param count number
---- @return number
-function newNode(bounds, start, count)
-    local node = { bounds = bounds, start = start, count = count }
+do
+    local nodesInit = ffi.new("node", { start = -100, count = -100 })
 
-    table.insert(nodes, node)
+    local nodeCount = MAX_DEPTH ^ 5 + 32
 
-    return #nodes
+    nodes = ffi.new("node[?]", nodeCount, nodesInit)
+
+    local index = 0
+
+    function getNodeCount()
+        return index + 1
+    end
+
+    function getLatestNodeIndex()
+        return index
+    end
+
+    function newNode(bounds, start, count)
+        index = index + 1
+        assert(index < nodeCount, "Ran out of BVH nodes: " .. index .. " / " .. nodeCount)
+        assert(tonumber(ffi.new("int64_t", start)) == start, "Value error: " .. start)
+        assert(tonumber(ffi.new("int64_t", count)) == count, "Value error: " .. count)
+
+        nodes[index].bounds = bounds
+        nodes[index].start = start
+        nodes[index].count = count
+
+        return index
+    end
 end
 
 ---@class triangle
@@ -64,14 +87,46 @@ end
 ---@field min vec3
 ---@field max vec3
 
+local tempMin = ffi.new("floatvec3")
+local tempMax = ffi.new("floatvec3")
+
 --- Creates a new bounds object
 --- @param min? vec3
 --- @param max? vec3
 --- @return bounds
 function newBounds(min, max)
-    local minX, minY, minZ = min and min.x or math.huge, min and min.y or math.huge, min and min.z or math.huge
-    local maxX, maxY, maxZ = max and max.x or -math.huge, max and max.y or -math.huge, max and max.z or -math.huge
-    return ffi.new("bounds", { minX, minY, minZ }, { maxX, maxY, maxZ })
+    tempMin.x, tempMin.y, tempMin.z = min.x, min.y, min.z
+    tempMax.x, tempMax.y, tempMax.z = max.x, max.y, max.z
+    return ffi.new("bounds", tempMin, tempMax)
+end
+
+local tempMinHuge = ffi.new("floatvec3", math.huge, math.huge, math.huge)
+local tempMaxHuge = ffi.new("floatvec3", -math.huge, -math.huge, -math.huge)
+
+local boundsInit = ffi.new("bounds", tempMinHuge, tempMaxHuge)
+
+local bounds = {}
+
+local count = MAX_DEPTH
+table.insert(bounds, {
+    data = ffi.new("bounds[?]", count, boundsInit),
+    index = count
+})
+local total = count
+local current = bounds[1]
+
+function emptyBounds()
+    if current.index == 0 then
+        table.insert(bounds, {
+            data = ffi.new("bounds[?]", total, boundsInit),
+            index = total
+        })
+        current = bounds[#bounds]
+        total = total * 2
+    end
+
+    current.index = current.index - 1
+    return current.data[current.index]
 end
 
 do
@@ -137,6 +192,14 @@ end
 
 local outSize = vec3(0, 0, 0)
 
+--- Calculate the cost of a node
+--- @param size vec3
+--- @param numTriangles number
+local function nodeCost(size, numTriangles)
+    local halfArea = size.x * size.y + size.x * size.z + size.y * size.z;
+    return halfArea * numTriangles;
+end
+
 --- Builds the BVH tree
 ---@param parentIndex number
 ---@param triangles table
@@ -154,8 +217,8 @@ function splitTree(parentIndex, triangles, triGlobalStart, triNum, depth)
     local splitAxis, splitPos, cost = chooseSplit(triangles, parent, triGlobalStart, triNum);
 
     if cost < parentCost and depth < MAX_DEPTH then
-        local boundsLeft = newBounds()
-        local boundsRight = newBounds()
+        local boundsLeft = emptyBounds()
+        local boundsRight = emptyBounds()
         local numOnLeft = 0;
 
         for i = triGlobalStart, triGlobalStart + triNum - 1 do
@@ -194,6 +257,12 @@ local function mix(a, b, i)
     return a * (1 - i) + b * i
 end
 
+local indexToAxis = {
+    [0] = "x",
+    [1] = "y",
+    [2] = "z"
+}
+
 --- choose the best split position for the given triangles
 ---@param triangles table
 ---@param node BvhNode
@@ -210,12 +279,6 @@ function chooseSplit(triangles, node, start, count)
     local numSplitTests = 5;
 
     local bestCost = math.huge
-
-    local indexToAxis = {
-        [0] = "x",
-        [1] = "y",
-        [2] = "z"
-    }
 
     -- Estimate best split pos
     for axisIndex = 0, 2 do
@@ -238,11 +301,11 @@ function chooseSplit(triangles, node, start, count)
 end
 
 do
-    local boundsLeft = newBounds()
-    local boundsRight = newBounds()
+    local boundsLeft = emptyBounds()
+    local boundsRight = emptyBounds()
 
-    local sizeA = ffi.new("doublevec3")
-    local sizeB = ffi.new("doublevec3")
+    local sizeA = ffi.new("floatvec3")
+    local sizeB = ffi.new("floatvec3")
 
     --- Evaluate the cost of a split
     ---@param triangles table
@@ -281,33 +344,25 @@ do
     end
 end
 
---- Calculate the cost of a node
---- @param size vec3
---- @param numTriangles number
-function nodeCost(size, numTriangles)
-    local halfArea = size.x * size.y + size.x * size.z + size.y * size.z;
-    return halfArea * numTriangles;
-end
-
 function sendBVHData()
-    BvhBuffer:resize(#nodes)
+    BvhBuffer:resize(getNodeCount())
 
-    for i, node in ipairs(nodes) do
-        assert(node.start, "Node triangle start is nil")
-        assert(node.count, "Node triangle count is nil")
+    print("Sending BVH data...: " .. getNodeCount())
+
+    for i = 1, getLatestNodeIndex() do
+        local node = nodes[i]
 
         BvhBuffer:setElementWriteIndex(i)
 
-        BvhBuffer:write(tonumber(node.bounds.min.x) or error())
-        BvhBuffer:write(tonumber(node.bounds.min.y) or error())
-        BvhBuffer:write(tonumber(node.bounds.min.z) or error())
+        BvhBuffer:write(node.bounds.min.x)
+        BvhBuffer:write(node.bounds.min.y)
+        BvhBuffer:write(node.bounds.min.z)
 
-        BvhBuffer:write(tonumber(node.bounds.max.x) or error())
-        BvhBuffer:write(tonumber(node.bounds.max.y) or error())
-        BvhBuffer:write(tonumber(node.bounds.max.z) or error())
+        BvhBuffer:write(node.bounds.max.x)
+        BvhBuffer:write(node.bounds.max.y)
+        BvhBuffer:write(node.bounds.max.z)
 
-        BvhBuffer:write(tonumber(node.start - 1) or error())
-        BvhBuffer:write(tonumber(node.count) or error())
+        BvhBuffer:writeUIntMany(node.start - 1, node.count)
     end
 
     BvhBuffer:flush()
