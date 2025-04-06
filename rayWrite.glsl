@@ -1,7 +1,5 @@
 #pragma language glsl4
 
-layout (local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
-
 #define SKIP_VIEW_Z 1
 #define SKIP_GET_POSITION_DATA 1
 
@@ -21,28 +19,38 @@ struct RayInfo {
     vec3 direction;
     vec3 color;
     vec3 incomingLight;
+    float distance;
 };
 
 layout(std430, binding = 0) readonly restrict buffer RayInfoBuffer {
     RayInfo rayInfos[];
 };
 
-layout(rgba32f, binding = 1) uniform highp image2D CurrentFrame;
+uniform highp sampler2D PreviousFrame;
 
 uniform highp uint FrameIndex;
-uniform highp uvec2 ScreenSize;
+uniform highp vec2 ScreenSize;
 uniform highp float Exposure;
 
-void computemain() {
-    vec2 screen_coords = vec2(gl_GlobalInvocationID.xy);
+uniform highp mat4 PreviousViewProjectionMatrix;
+uniform highp vec3 CameraPosition;
+uniform highp mat4 InverseViewProjectionMatrix;
 
-    uint pixelIndex = uint(screen_coords.y * ScreenSize.x + screen_coords.x);
+#ifdef PIXEL
+
+out vec4 FragColor;
+
+void pixelmain() {
+    vec2 uv = love_PixelCoord.xy / ScreenSize;
+    uint pixelIndex = uint(floor(love_PixelCoord.y) * ScreenSize.x + floor(love_PixelCoord.x));
 
     RayInfo rayInfo = rayInfos[pixelIndex];
 
     highp float contribution = 1.0 / float(FrameIndex);
 
-    highp vec3 previousColor = imageLoad(CurrentFrame, ivec2(screen_coords)).rgb;
+    highp vec3 previousColor = texture(PreviousFrame, uv).xyz;
 
-    imageStore(CurrentFrame, ivec2(screen_coords), vec4(mix(previousColor, rayInfo.incomingLight, contribution), 1.0));
+    FragColor = vec4(mix(previousColor, rayInfo.incomingLight, contribution), 1.0);
 }
+
+#endif

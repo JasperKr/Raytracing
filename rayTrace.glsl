@@ -59,6 +59,7 @@ struct RayInfo {
     vec3 direction;
     vec3 color;
     vec3 incomingLight;
+    float distance;
 };
 
 layout(std430, binding = 0) readonly restrict buffer Triangles {
@@ -398,8 +399,16 @@ void traceRay(inout RayInfo ray, inout uint state) {
     if (distData.x >= 1E6) {
         ray.incomingLight += ray.color * sampleSkybox(rayData);
         ray.color *= 0.0; // ray has hit nothing, so it's done
+
+        // set primary ray distance
+    if (ray.distance < -0.5)
+        ray.distance = 1000.0;
         return;
     }
+
+    // set primary ray distance
+    if (ray.distance < -0.5)
+        ray.distance = distData.x;
 
     // if (exp(-GlobalFogDensity * distData.x) < RandomValue(state))
     // {
@@ -482,9 +491,12 @@ void traceRay(inout RayInfo ray, inout uint state) {
         reflected = reflect(ray.direction, normal);
     }
 
-    if (RandomValue(state) < albedo.a)
+    float rA = RandomValue(state);
+    float rB = RandomValue(state);
+
+    if (rA < albedo.a)
     {
-        if (RandomValue(state) < metallic)
+        if (rB < metallic)
         {
             ray.direction = reflected;
         }
@@ -506,7 +518,7 @@ void traceRay(inout RayInfo ray, inout uint state) {
 
         bool canRefract = sin2ThetaT < 1.0;
 
-        if (!canRefract || reflectance(cosTheta, eta) > RandomValue(state))
+        if (!canRefract || reflectance(cosTheta, eta) > rA)
         {
             ray.direction = reflected;
         }
@@ -527,7 +539,7 @@ uniform highp uint RandomIndex;
 
 void computemain() {
     uint pixelIndex = gl_GlobalInvocationID.x;
-    uint rngState = pixelIndex + RandomIndex;
+    uint rngState = RandomIndex + pixelIndex % 64;
 
     RayInfo rayInfo = rayInfos[pixelIndex];
 

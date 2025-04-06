@@ -52,7 +52,7 @@ function love.load()
     Shaders = {
         rayTrace = Rhodium.graphics.newComputeShader("rayTrace.glsl"),
         rayInit = Rhodium.graphics.newComputeShader("rayInit.glsl"),
-        rayWrite = Rhodium.graphics.newComputeShader("rayWrite.glsl"),
+        rayWrite = Rhodium.graphics.newShader("rayWrite.glsl"),
     }
 
     Skybox = love.graphics.newCubeImage("skybox.exr", { linear = true })
@@ -64,6 +64,13 @@ function love.load()
 
     Target = love.graphics.newTexture(love.graphics.getWidth(), love.graphics.getHeight(),
         { format = "rgba32f", computewrite = true, canvas = true })
+    Target2 = love.graphics.newTexture(love.graphics.getWidth(), love.graphics.getHeight(),
+        { format = "rgba32f", computewrite = true, canvas = true })
+    CurrentTarget = Target
+    PreviousTarget = Target2
+
+    Target:setWrap("clampzero", "clampzero")
+    Target2:setWrap("clampzero", "clampzero")
 
     local materialformat = {
         { name = "albedo",          format = "int32vec2", location = 0 }, -- 10r, 10g, 10b, dummy
@@ -104,6 +111,7 @@ function love.load()
         { name = "direction",     format = "floatvec3", location = 1 },
         { name = "color",         format = "floatvec3", location = 2 },
         { name = "incomingLight", format = "floatvec3", location = 3 },
+        { name = "distance",      format = "float",     location = 4 },
     }
 
     RayBuffer = newBuffer(rayBufferFormat, rayCount, { shaderstorage = true, usage = "dynamic" })
@@ -385,8 +393,6 @@ function love.load()
 
     MAX_BOUNCES = 4
 
-    Shaders.rayWrite:send("CurrentFrame", Target)
-
     print("Done!")
 end
 
@@ -519,21 +525,20 @@ DebugMode = 0
 Frame = 1
 
 function love.update(dt)
+    Camera.previousInverseViewMatrix:set(Camera.inverseViewMatrix)
+    Camera.previousInverseViewProjectionMatrix:set(Camera.inverseViewProjectionMatrix)
+    Camera.previousProjectionMatrix:set(Camera.projectionMatrix)
+    Camera.previousViewMatrix:set(Camera.viewMatrix)
+    Camera.previousViewProjectionMatrix:set(Camera.viewProjectionMatrix)
+
+    Rhodium.math.calculateCameraMatrix()
+    Camera.inverseViewMatrix = Camera.viewMatrix:invert():transpose()
+    Camera.inverseViewProjectionMatrix = Camera.viewProjectionMatrix:invert():transpose()
+    local forward = vec3(math.sin(-Camera.yaw) * math.cos(Camera.pitch),
+        math.sin(Camera.pitch), math.cos(-Camera.yaw) * math.cos(Camera.pitch))
+    local right = vec3(math.cos(Camera.yaw), 0, math.sin(Camera.yaw))
+
     if love.mouse.isDown(2) then
-        Updated = true
-
-        Camera.previousInverseViewMatrix:set(Camera.inverseViewMatrix)
-        Camera.previousInverseViewProjectionMatrix:set(Camera.inverseViewProjectionMatrix)
-        Camera.previousProjectionMatrix:set(Camera.projectionMatrix)
-        Camera.previousViewMatrix:set(Camera.viewMatrix)
-        Camera.previousViewProjectionMatrix:set(Camera.viewProjectionMatrix)
-
-        Rhodium.math.calculateCameraMatrix()
-        Camera.inverseViewMatrix = Camera.viewMatrix:invert():transpose()
-        Camera.inverseViewProjectionMatrix = Camera.viewProjectionMatrix:invert():transpose()
-        local forward = vec3(math.sin(-Camera.yaw) * math.cos(Camera.pitch),
-            math.sin(Camera.pitch), math.cos(-Camera.yaw) * math.cos(Camera.pitch))
-        local right = vec3(math.cos(Camera.yaw), 0, math.sin(Camera.yaw))
         if love.keyboard.isDown("w") then
             Camera.position = Camera.position -
                 forward * Camera.speed * dt
@@ -567,7 +572,7 @@ function init()
     Shaders.rayInit:send("CameraPosition", Camera.position:ttable())
     Shaders.rayInit:send("InverseViewProjectionMatrix", "column", Camera.inverseViewProjectionMatrix)
     Shaders.rayInit:send("ScreenSize", { love.graphics.getDimensions() })
-    Shaders.rayInit:send("RandomIndex", love.math.random(0, 2 ^ 32 - 1))
+    Shaders.rayInit:send("RandomIndex", Frame)
 
     local iW, iH = love.graphics.getDimensions()
     local x, y = math.ceil(iW / sx), math.ceil(iH / sy)
@@ -579,35 +584,49 @@ function trace()
     local sx, sy, sz = Shaders.rayTrace:getLocalThreadgroupSize()
 
     Shaders.rayTrace:send("SkyboxBrightness", SkyboxBrightness)
-    Shaders.rayTrace:send("RandomIndex", love.math.random(0, 2 ^ 32 - 1))
 
     local iW, iH = love.graphics.getDimensions()
     local x = math.ceil((iW * iH) / sx)
 
     for i = 1, MAX_BOUNCES do
+        Shaders.rayTrace:send("RandomIndex", Frame + i - 1)
         Rhodium.graphics.dispatchThreadgroups(Shaders.rayTrace, x, 1, 1)
     end
 end
 
 Exposure = 1.0
+local tempImage = love.graphics.newImage(love.graphics.getWidth(), love.graphics.getHeight(), { format = "rgba32f" })
 
 function write()
-    local sx, sy, sz = Shaders.rayWrite:getLocalThreadgroupSize()
+    Frame = Frame % (2 ^ 32 - 1)
+
     Shaders.rayWrite:send("FrameIndex", Frame)
     Shaders.rayWrite:send("ScreenSize", { love.graphics.getDimensions() })
 
-    local iW, iH = love.graphics.getDimensions()
-    local x, y = math.ceil(iW / sx), math.ceil(iH / sy)
+    Shaders.rayWrite:send("PreviousFrame", PreviousTarget)
 
-    Rhodium.graphics.dispatchThreadgroups(Shaders.rayWrite, x, y, 1)
+    love.graphics.setCanvas(CurrentTarget)
+    love.graphics.setBlendMode("none")
+    Rhodium.graphics.setShader(Shaders.rayWrite)
+
+    love.graphics.draw(tempImage)
+    love.graphics.setShader()
+    love.graphics.setBlendMode("alpha")
+    love.graphics.setCanvas()
 end
 
 function love.draw()
+    local temp = CurrentTarget
+    CurrentTarget = PreviousTarget
+    PreviousTarget = temp
+
     if Updated then
         Updated = false
         Frame = 1
 
-        love.graphics.setCanvas(Target)
+        love.graphics.setCanvas(CurrentTarget)
+        love.graphics.clear()
+        love.graphics.setCanvas(PreviousTarget)
         love.graphics.clear()
 
         love.graphics.setCanvas()
@@ -619,7 +638,7 @@ function love.draw()
     trace()
     write()
 
-    love.graphics.draw(Target)
+    love.graphics.draw(CurrentTarget)
 
     love.graphics.print("FPS: " .. love.timer.getFPS(), 10, 10)
     love.graphics.print("Camera position: " .. tostring(Camera.position), 10, 30)
@@ -644,8 +663,6 @@ end
 
 function love.mousemoved(x, y, dx, dy)
     if love.mouse.isDown(2) then
-        Updated = true
-
         Camera.yaw = Camera.yaw + dx * 0.004
         Camera.pitch = Rhodium.math.clamp(Camera.pitch + dy * 0.004, -Rhodium.math.PI05, Rhodium.math.PI05)
     end
@@ -654,6 +671,10 @@ end
 function love.keypressed(key)
     if key == "escape" then
         love.event.quit()
+    end
+
+    if key == "return" then
+        Updated = true
     end
 
     if key == "f1" then

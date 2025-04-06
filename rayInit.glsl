@@ -21,6 +21,7 @@ struct RayInfo {
     vec3 direction;
     vec3 color;
     vec3 incomingLight;
+    float distance;
 };
 
 layout(std430, binding = 0) writeonly restrict buffer RayInfoBuffer {
@@ -53,13 +54,15 @@ vec3 RandomHemisphereDirection(vec3 normal, inout uint state)
 
 uniform highp vec3 CameraPosition;
 uniform highp mat4 InverseViewProjectionMatrix;
-
 uniform highp uint RandomIndex;
-
 uniform highp uvec2 ScreenSize;
 
 void computemain() {
     vec2 screen_coords = vec2(gl_GlobalInvocationID.xy);
+
+    if (screen_coords.x >= ScreenSize.x || screen_coords.y >= ScreenSize.y) {
+        return;
+    }
 
     vec2 VarVertexCoord = (screen_coords + vec2(0.5)) / ScreenSize;
 
@@ -67,14 +70,14 @@ void computemain() {
 
     vec3 rayDirection = normalize(world.xyz / world.w - CameraPosition);
 
-    uint pixelIndex = uint(screen_coords.y * ScreenSize.x + screen_coords.x);
+    uint pixelIndex = uint(gl_GlobalInvocationID.y) * ScreenSize.x + uint(gl_GlobalInvocationID.x);
     uint rngState = pixelIndex + RandomIndex;
 
     vec3 randomDirection = RandomHemisphereDirection(rayDirection, rngState);
 
-    const float jitterAmount = 0.001;
+    const float jitterAmount = 0.0;
 
-    RayInfo rayInfo = RayInfo(CameraPosition + randomDirection * jitterAmount, rayDirection, vec3(1.0), vec3(0.0));
+    RayInfo rayInfo = RayInfo(CameraPosition, rayDirection, vec3(1.0), vec3(0.0), -1.0);
 
     rayInfos[pixelIndex] = rayInfo;
 }

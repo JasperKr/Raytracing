@@ -434,9 +434,9 @@ local function createMaterial(textures, material)
 	end
 	uniforms.emissiveFactor = material.emissiveFactor or { 0, 0, 0 }
 
-	uniforms.emissiveFactor[1] = uniforms.emissiveFactor[1] * 100.0 -- make emissive factor brighter
-	uniforms.emissiveFactor[2] = uniforms.emissiveFactor[2] * 100.0
-	uniforms.emissiveFactor[3] = uniforms.emissiveFactor[3] * 100.0
+	uniforms.emissiveFactor[1] = uniforms.emissiveFactor[1] * 1000.0 -- make emissive factor brighter
+	uniforms.emissiveFactor[2] = uniforms.emissiveFactor[2] * 1000.0
+	uniforms.emissiveFactor[3] = uniforms.emissiveFactor[3] * 1000.0
 
 	uniforms.opaque = material.alphaMode == 'OPAQUE' or not material.alphaMode
 	if material.alphaMode == 'MASK' then
